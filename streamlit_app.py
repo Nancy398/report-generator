@@ -89,17 +89,129 @@ def get_properties():
  with db() as c:return c.execute('SELECT id,name,tax,insurance,min_cash,opening_tax,opening_insurance FROM properties ORDER BY name').fetchall()
 def history(pid):
  with db() as c:return c.execute('SELECT period,bank_cash,committed,tax_paid,insurance_paid,tax_funded,insurance_funded,tax_shortfall,insurance_shortfall,tax_balance,insurance_balance,notes FROM reserve_months WHERE property_id=? ORDER BY period',(pid,)).fetchall()
-def build_docx(name,period,financial,roll,reserve):
- d=Document();d.add_heading('MOO HOUSING INC.',0);d.add_heading('Property Investor Report',1);d.add_paragraph(f'{name} | {period}')
- d.add_heading('Financial Performance',2)
- for label,value in [('Total Operating Income',financial.get('income')),('Total Operating Expenses',financial.get('expenses')),('Net Operating Income',financial.get('noi'))]:d.add_paragraph(f'{label}: {dollars(value) if value is not None else "Not available"}')
- d.add_heading('Occupancy',2)
- d.add_paragraph(f"Occupied Rooms: {roll['occupied']} / {roll['rooms']} ({roll['rate']:.1%})" if roll and roll['rate'] is not None else 'Rent Roll not uploaded')
- if roll:d.add_paragraph(f"Scheduled Monthly Rent (Rent Roll): {dollars(roll['scheduled_rent'])}")
- d.add_heading('Reserve Management',2)
- for label,value in reserve.items():d.add_paragraph(f'{label}: {dollars(value)}')
- d.add_paragraph('Draft for internal review. Reserve allocations are cash designations, not additional P&L expenses. Scheduled rent is not recognized rental income.')
- bio=io.BytesIO();d.save(bio);return bio.getvalue()
+REPORT_TEMPLATE = Path(__file__).parent / 'report_template.docx'
+
+def _replace_text(paragraph, value):
+  # Preserve the first run's formatting and the original paragraph layout.
+  if paragraph.runs:
+    paragraph.runs[0].text = str(value)
+    for run in paragraph.runs[1:]: run.text = ''
+  else: paragraph.add_run(str(value))
+
+def _set_cell(cell, value):
+  if cell.paragraphs:
+    _replace_text(cell.paragraphs[0], value)
+    for paragraph in cell.paragraphs[1:]: _replace_text(paragraph, '')
+
+def _month_count(period):
+  names=['january','february','march','april','may','june','july','august','september','october','november','december']
+  found=[i for i,n in enumerate(names) if re.search(r'\b'+n+r'\b',period.lower())]
+  if len(found)==2 and found[1]>=found[0]: return found[1]-found[0]+1
+  return 1
+
+def auto_executive_summary(name, period, financial, roll, reserve, lang='English', notes=''):
+  """Fact-based draft; only describes figures available in uploaded files."""
+  cn=lang=='中文'
+  sentences=[]
+  if cn:
+    sentences.append(f'{name}在{period}的经营情况如下。')
+  else:
+    sentences.append(f'During {period}, {name} reported the following operating results.')
+  if roll and roll.get('rate') is not None:
+    occ=roll['rate']
+    if cn:
+      sentences.append(f'根据上传的 Rent Roll，房间入住率为{occ:.1%}（{roll["occupied"]}/{roll["rooms"]}间）；整租物业按其下属房间计算。')
+    else:
+      sentences.append(f'The uploaded Rent Roll indicates room occupancy of {occ:.1%} ({roll["occupied"]} of {roll["rooms"]} rooms), accounting for master-leased units.')
+  inc,exp,noi=(financial.get(k) for k in ('income','expenses','noi'))
+  if inc is not None and exp is not None and noi is not None:
+    if cn:
+      sentences.append(f'本期营业收入为{dollars(inc)}，运营费用为{dollars(exp)}，净运营收入（NOI）为{dollars(noi)}。')
+    else:
+      sentences.append(f'Operating income totaled {dollars(inc)}, expenses were {dollars(exp)}, and net operating income (NOI) was {dollars(noi)}.')
+  tax=reserve.get('Monthly Tax Reserve Target',0)
+  ins=reserve.get('Monthly Insurance Reserve Target',0)
+  if cn:
+    sentences.append(f'每月计划预留{dollars(tax+ins)}用于未来房产税及保险（房产税{dollars(tax)}、保险{dollars(ins)}）。')
+  else:
+    sentences.append(f'The monthly reserve target for future property tax and insurance is {dollars(tax+ins)} (tax: {dollars(tax)}; insurance: {dollars(ins)}).')
+  gap=reserve.get('Tax Reserve Shortfall',0)+reserve.get('Insurance Reserve Shortfall',0)
+  if gap>0:
+    sentences.append(f'目前记录的储备金缺口为{dollars(gap)}，分红前需核实可用现金。' if cn else f'A recorded reserve funding shortfall of {dollars(gap)} remains; available cash must be reviewed before any distribution.')
+  if notes.strip():sentences.append(notes.strip())
+  return '\n\n'.join(sentences)
+
+def build_docx(name, period, financial, roll, reserve, language='English', months=None, extra=None):
+  """Five-section investor report; do not invent collection/cash data."""
+  from docx.shared import Inches, Pt, RGBColor
+  from docx.enum.text import WD_ALIGN_PARAGRAPH
+  from docx.enum.table import WD_TABLE_ALIGNMENT
+  extra=extra or {}
+  d=Document()
+  section=d.sections[0]
+  section.top_margin=Inches(.65);section.bottom_margin=Inches(.65)
+  section.left_margin=Inches(.78);section.right_margin=Inches(.78)
+  def line(text='',bold=False,size=10):
+    p=d.add_paragraph();r=p.add_run(str(text));r.bold=bold;r.font.size=Pt(size);return p
+  def heading(text):
+    p=d.add_paragraph();r=p.add_run(text);r.bold=True;r.font.size=Pt(15);r.font.color.rgb=RGBColor(26,56,81)
+  def money(v):return dollars(v) if v is not None else 'Pending confirmation'
+  def table(headers,rows):
+    t=d.add_table(rows=1, cols=len(headers));t.style='Light Shading Accent 1'
+    for j,x in enumerate(headers):t.rows[0].cells[j].text=str(x)
+    for row in rows:
+      cells=t.add_row().cells
+      for j,x in enumerate(row):cells[j].text=str(x)
+    d.add_paragraph('')
+  # Cover: logo embedded in Word, not a remote image.
+  logo=Path(__file__).parent/'moo_logo.png'
+  if logo.exists():
+    p=d.add_paragraph();p.alignment=WD_ALIGN_PARAGRAPH.CENTER;p.add_run().add_picture(str(logo),width=Inches(2.4))
+  p=line('MOO HOUSING INC.',True,16);p.alignment=WD_ALIGN_PARAGRAPH.CENTER
+  d.add_paragraph('\n')
+  p=line('INVESTOR MONTHLY REPORT' if language!='中文' else '投资人月度报告',True,25);p.alignment=WD_ALIGN_PARAGRAPH.CENTER
+  p=line(name,True,18);p.alignment=WD_ALIGN_PARAGRAPH.CENTER
+  p=line(period,False,14);p.alignment=WD_ALIGN_PARAGRAPH.CENTER
+  p=line('Prepared by: Nancy Liu | Moo Housing Inc.',False,11);p.alignment=WD_ALIGN_PARAGRAPH.CENTER
+  d.add_page_break()
+  income=financial.get('income');expenses=financial.get('expenses');noi=financial.get('noi')
+  months=months or _month_count(period)
+  required=(reserve.get('Monthly Tax Reserve Target',0)+reserve.get('Monthly Insurance Reserve Target',0))*months
+  reserve_balance=reserve.get('Tax Reserve Balance',0)+reserve.get('Insurance Reserve Balance',0)
+  reserve_gap=reserve.get('Tax Reserve Shortfall',0)+reserve.get('Insurance Reserve Shortfall',0)
+  occ=f"{roll['rate']:.1%}" if roll and roll.get('rate') is not None else 'Not provided'
+  heading('1. Executive Summary')
+  line(extra.get('executive_summary') or auto_executive_summary(name,period,financial,roll,reserve,language))
+  heading('2. Occupancy & Rent Collection')
+  table(['Metric','Current Period','Previous Period','Notes'],[
+    ['Occupancy Rate',occ,extra.get('previous_occupancy') or 'Not provided',extra.get('occupancy_notes') or ''],
+    ['Rent Collected',money(extra.get('rent_collected')),money(extra.get('previous_rent_collected')),'Cash collected; not scheduled rent'],
+    ['Outstanding Balance',money(extra.get('outstanding_balance')),money(extra.get('previous_outstanding')),'Accounts receivable']])
+  heading('3. Financial Summary')
+  table(['Item','Amount (USD)','Notes'],[
+    ['Total Income',money(income),'AppFolio Income Statement'],
+    ['Utilities Income',money(extra.get('utilities_income')),'Confirm separately; included in total if applicable'],
+    ['Operating Expenses',money(expenses),'AppFolio Income Statement'],
+    ['Net Operating Income (NOI)',money(noi),'Income less expenses'],
+    ['Reserve Contribution',money(required),f'{months} month(s) × monthly tax/insurance reserve']])
+  heading('4. Distribution Details')
+  prior=extra.get('prior_balance');this=extra.get('current_balance')
+  # Never derive cash balances from NOI alone.
+  net=(this-reserve_balance) if this is not None else None
+  table(['Item','Amount (USD)','Notes'],[
+    ['Total Balance Last Month',money(prior),'Opening cash balance; admin supplied'],
+    ['Total Balance This Month',money(this),'Closing available bank cash; admin supplied'],
+    ['Cash Reserved in Bank',money(reserve_balance),'Recorded tax + insurance reserve balances'],
+    ['Net Cash Flow to Investors',money(net),'Closing cash less designated reserves; before minimum operating cash and other commitments']])
+  line(f'Minimum Operating Cash: {money(reserve.get("Minimum Operating Cash"))} | Outstanding Reserve Shortfall: {money(reserve_gap)}',True)
+  line('Distribution pending bank reconciliation, committed obligations, reserve funding and management approval.')
+  heading('5. Appendix')
+  line('• Detailed financial statements (attach AppFolio export)')
+  line('• Detailed Balance and Reserve Report (attach separately)')
+  line('• Rent Roll (attach separately)')
+  line('Attachments are listed but are not automatically embedded in this Word report.')
+  bio=io.BytesIO();d.save(bio);return bio.getvalue()
+
 def build_pdf(name,period,financial,roll,reserve):
  bio=io.BytesIO();styles=getSampleStyleSheet();story=[Paragraph('MOO HOUSING INC. | INVESTOR REPORT',styles['Title']),Paragraph(f'{name} | {period}',styles['Heading2']),Spacer(1,14)]
  items=[('Total Operating Income',financial.get('income')),('Total Operating Expenses',financial.get('expenses')),('Net Operating Income',financial.get('noi'))]
@@ -297,11 +409,47 @@ else:
   content=(eng if language=='English' else chi if language=='中文' else eng+'\n\n'+'='*25+'\n\n'+chi)
   st.subheader('Preview / 报告预览')
   st.text_area('Investor report draft',value=content,height=440,key='studio_preview')
-  # Export actual bilingual copy to editable Word, avoiding font issues in PDFs.
-  d=Document();d.add_heading('MOO HOUSING INC.',0)
-  for para in content.split('\n'):
-   if para.strip():d.add_paragraph(para)
-  out=io.BytesIO();d.save(out);doc_bytes=out.getvalue()
+  st.caption('Word 使用统一的 Moo Housing 双页模板；邮件与微信文案仍可按项目语言生成。')
+  with st.expander('Report Details / 运营与现金数据（手动填写）', expanded=True):
+   st.markdown('**Executive Summary / 自动生成并可编辑**')
+   st.caption('根据已上传的 Income Statement、Rent Roll 和 Reserve 设置自动起草。入住计划、续保、维修等无法从财务报表确认的事项请自行补充。')
+   additional_summary=st.text_area('Additional operational updates / 补充运营信息（可选）',key='rpt_summary_notes',placeholder='例如：Two vacant rooms have been leased and move-ins are scheduled for October.')
+   auto_summary=auto_executive_summary(selected[1],period,financial,roll,reserve,'中文' if language=='中文' else 'English',additional_summary)
+   summary_key=f'rpt_summary_edit_{pid}_{period}_{language}'
+   seed_key=summary_key+'_seed'
+   if st.session_state.get(seed_key)!=auto_summary:
+    st.session_state[summary_key]=auto_summary
+    st.session_state[seed_key]=auto_summary
+   summary=st.text_area('Executive Summary (editable before export)',key=summary_key,height=220)
+   if st.button('Regenerate summary / 重新生成',key='rpt_regen_summary'):
+    st.session_state[summary_key]=auto_summary
+    st.rerun()
+   pocc=st.text_input('Previous Month Occupancy',key='rpt_prev_occ')
+   occupancy_notes=st.text_input('Occupancy Notes',key='rpt_occ_notes')
+   a,b=st.columns(2)
+   rent_col=a.number_input('Rent Collected ($)',min_value=0.,value=0.,key='rpt_rent_col')
+   prev_rent=b.number_input('Previous Rent Collected ($)',min_value=0.,value=0.,key='rpt_prev_rent')
+   c,d=st.columns(2)
+   ar=c.number_input('Outstanding Balance ($)',min_value=0.,value=0.,key='rpt_ar')
+   prev_ar=d.number_input('Previous Outstanding Balance ($)',min_value=0.,value=0.,key='rpt_prev_ar')
+   util=st.number_input('Utilities Income ($)',min_value=0.,value=0.,key='rpt_util')
+   a,b=st.columns(2)
+   prior=a.number_input('Total Balance Last Month ($)',value=0.,key='rpt_prior')
+   current=b.number_input('Total Balance This Month ($)',value=0.,key='rpt_current')
+   cash_confirm=st.checkbox('I have entered and checked cash balances and collection amounts',key='rpt_cash_confirm')
+  extra={'executive_summary':summary,'previous_occupancy':pocc,'occupancy_notes':occupancy_notes,
+         'rent_collected':rent_col if cash_confirm else None,'previous_rent_collected':prev_rent if cash_confirm else None,
+         'outstanding_balance':ar if cash_confirm else None,'previous_outstanding':prev_ar if cash_confirm else None,
+         'utilities_income':util if cash_confirm else None,'prior_balance':prior if cash_confirm else None,
+         'current_balance':current if cash_confirm else None}
+  doc_bytes=build_docx(selected[1],period,financial,roll,reserve,language=('中文' if language=='中文' else 'English'),extra=extra)
+  if language=='中文':
+   chi='Executive Summary / 经营摘要\n'+summary+'\n\n'+chi
+  elif language=='Both':
+   eng='Executive Summary\n'+summary+'\n\n'+eng
+  else:
+   eng='Executive Summary\n'+summary+'\n\n'+eng
+  content=(eng if language=='English' else chi if language=='中文' else eng+'\n\n'+'='*25+'\n\n'+chi)
   st.download_button('⬇️ Download bilingual Word / 下载 Word',doc_bytes,file_name=f'Investor_Report_{pid}_{period.replace(" ","_")}.docx',mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
   st.download_button('⬇️ Download email / WeChat text (.txt)',content.encode('utf-8-sig'),file_name=f'Investor_Message_{pid}.txt',mime='text/plain')
   st.markdown('**Email / 邮件发送**')
