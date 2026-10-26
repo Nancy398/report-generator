@@ -142,74 +142,102 @@ def auto_executive_summary(name, period, financial, roll, reserve, lang='English
   return '\n\n'.join(sentences)
 
 def build_docx(name, period, financial, roll, reserve, language='English', months=None, extra=None):
-  """Five-section investor report; do not invent collection/cash data."""
+  """Editable, bilingual five-section report with embedded branding."""
   from docx.shared import Inches, Pt, RGBColor
   from docx.enum.text import WD_ALIGN_PARAGRAPH
   from docx.enum.table import WD_TABLE_ALIGNMENT
-  extra=extra or {}
-  d=Document()
-  section=d.sections[0]
-  section.top_margin=Inches(.65);section.bottom_margin=Inches(.65)
-  section.left_margin=Inches(.78);section.right_margin=Inches(.78)
-  def line(text='',bold=False,size=10):
-    p=d.add_paragraph();r=p.add_run(str(text));r.bold=bold;r.font.size=Pt(size);return p
-  def heading(text):
-    p=d.add_paragraph();r=p.add_run(text);r.bold=True;r.font.size=Pt(15);r.font.color.rgb=RGBColor(26,56,81)
-  def money(v):return dollars(v) if v is not None else 'Pending confirmation'
+  from docx.oxml import OxmlElement
+  from docx.oxml.ns import qn
+  extra=extra or {}; cn=(language=='中文')
+  d=Document();sec=d.sections[0]
+  sec.top_margin=Inches(.7);sec.bottom_margin=Inches(.7)
+  sec.left_margin=Inches(.75);sec.right_margin=Inches(.75)
+  normal=d.styles['Normal'];normal.font.name='Microsoft YaHei' if cn else 'Aptos';normal.font.size=Pt(10)
+  def text(t='',size=10,bold=False,color=None,align=None):
+    p=d.add_paragraph();p.paragraph_format.space_after=Pt(9)
+    if align is not None:p.alignment=align
+    r=p.add_run(str(t));r.bold=bold;r.font.size=Pt(size)
+    if color:r.font.color.rgb=RGBColor(*color)
+    return p
+  def heading(t):
+    p=d.add_paragraph();p.paragraph_format.space_before=Pt(12);p.paragraph_format.space_after=Pt(8)
+    r=p.add_run(t);r.bold=True;r.font.size=Pt(15);r.font.color.rgb=RGBColor(22,51,74)
+  def money(v):return dollars(v) if v is not None else ('待确认' if cn else 'Pending confirmation')
   def table(headers,rows):
-    t=d.add_table(rows=1, cols=len(headers));t.style='Light Shading Accent 1'
-    for j,x in enumerate(headers):t.rows[0].cells[j].text=str(x)
+    t=d.add_table(rows=1,cols=len(headers));t.autofit=True;t.style='Light Shading Accent 1'
+    for i,v in enumerate(headers):t.rows[0].cells[i].text=str(v)
     for row in rows:
       cells=t.add_row().cells
-      for j,x in enumerate(row):cells[j].text=str(x)
+      for i,v in enumerate(row):cells[i].text=str(v)
+    for cell in t.rows[0].cells:
+      tcPr=cell._tc.get_or_add_tcPr();shd=OxmlElement('w:shd');shd.set(qn('w:fill'),'17324D');tcPr.append(shd)
+      for p in cell.paragraphs:
+        for r in p.runs:r.bold=True;r.font.color.rgb=RGBColor(255,255,255)
     d.add_paragraph('')
-  # Cover: logo embedded in Word, not a remote image.
+  # Word-native cover text and an embedded logo; no externally linked pictures.
   logo=Path(__file__).parent/'moo_logo.png'
   if logo.exists():
-    p=d.add_paragraph();p.alignment=WD_ALIGN_PARAGRAPH.CENTER;p.add_run().add_picture(str(logo),width=Inches(2.4))
-  p=line('MOO HOUSING INC.',True,16);p.alignment=WD_ALIGN_PARAGRAPH.CENTER
+    p=d.add_paragraph();p.alignment=WD_ALIGN_PARAGRAPH.CENTER;p.add_run().add_picture(str(logo),width=Inches(2.3))
+  text('MOO HOUSING INC.',17,True,(22,51,74),WD_ALIGN_PARAGRAPH.CENTER)
   d.add_paragraph('\n')
-  p=line('INVESTOR MONTHLY REPORT' if language!='中文' else '投资人月度报告',True,25);p.alignment=WD_ALIGN_PARAGRAPH.CENTER
-  p=line(name,True,18);p.alignment=WD_ALIGN_PARAGRAPH.CENTER
-  p=line(period,False,14);p.alignment=WD_ALIGN_PARAGRAPH.CENTER
-  p=line('Prepared by: Nancy Liu | Moo Housing Inc.',False,11);p.alignment=WD_ALIGN_PARAGRAPH.CENTER
+  text('投资人财务及分红报告' if cn else 'INVESTOR FINANCIAL & DISTRIBUTION REPORT',23,True,(22,51,74),WD_ALIGN_PARAGRAPH.CENTER)
+  text(name,18,True,align=WD_ALIGN_PARAGRAPH.CENTER)
+  text(period,14,align=WD_ALIGN_PARAGRAPH.CENTER)
+  text('编制：Nancy Liu | Moo Housing Inc.' if cn else 'Prepared by: Nancy Liu | Moo Housing Inc.',11,align=WD_ALIGN_PARAGRAPH.CENTER)
   d.add_page_break()
   income=financial.get('income');expenses=financial.get('expenses');noi=financial.get('noi')
   months=months or _month_count(period)
   required=(reserve.get('Monthly Tax Reserve Target',0)+reserve.get('Monthly Insurance Reserve Target',0))*months
   reserve_balance=reserve.get('Tax Reserve Balance',0)+reserve.get('Insurance Reserve Balance',0)
   reserve_gap=reserve.get('Tax Reserve Shortfall',0)+reserve.get('Insurance Reserve Shortfall',0)
-  occ=f"{roll['rate']:.1%}" if roll and roll.get('rate') is not None else 'Not provided'
-  heading('1. Executive Summary')
-  line(extra.get('executive_summary') or auto_executive_summary(name,period,financial,roll,reserve,language))
-  heading('2. Occupancy & Rent Collection')
-  table(['Metric','Current Period','Previous Period','Notes'],[
-    ['Occupancy Rate',occ,extra.get('previous_occupancy') or 'Not provided',extra.get('occupancy_notes') or ''],
-    ['Rent Collected',money(extra.get('rent_collected')),money(extra.get('previous_rent_collected')),'Cash collected; not scheduled rent'],
-    ['Outstanding Balance',money(extra.get('outstanding_balance')),money(extra.get('previous_outstanding')),'Accounts receivable']])
-  heading('3. Financial Summary')
-  table(['Item','Amount (USD)','Notes'],[
-    ['Total Income',money(income),'AppFolio Income Statement'],
-    ['Utilities Income',money(extra.get('utilities_income')),'Confirm separately; included in total if applicable'],
-    ['Operating Expenses',money(expenses),'AppFolio Income Statement'],
-    ['Net Operating Income (NOI)',money(noi),'Income less expenses'],
-    ['Reserve Contribution',money(required),f'{months} month(s) × monthly tax/insurance reserve']])
-  heading('4. Distribution Details')
-  prior=extra.get('prior_balance');this=extra.get('current_balance')
-  # Never derive cash balances from NOI alone.
-  net=(this-reserve_balance) if this is not None else None
-  table(['Item','Amount (USD)','Notes'],[
-    ['Total Balance Last Month',money(prior),'Opening cash balance; admin supplied'],
-    ['Total Balance This Month',money(this),'Closing available bank cash; admin supplied'],
-    ['Cash Reserved in Bank',money(reserve_balance),'Recorded tax + insurance reserve balances'],
-    ['Net Cash Flow to Investors',money(net),'Closing cash less designated reserves; before minimum operating cash and other commitments']])
-  line(f'Minimum Operating Cash: {money(reserve.get("Minimum Operating Cash"))} | Outstanding Reserve Shortfall: {money(reserve_gap)}',True)
-  line('Distribution pending bank reconciliation, committed obligations, reserve funding and management approval.')
-  heading('5. Appendix')
-  line('• Detailed financial statements (attach AppFolio export)')
-  line('• Detailed Balance and Reserve Report (attach separately)')
-  line('• Rent Roll (attach separately)')
-  line('Attachments are listed but are not automatically embedded in this Word report.')
+  occ=f"{roll['rate']:.1%}" if roll and roll.get('rate') is not None else ('未提供' if cn else 'Not provided')
+  summary=extra.get('executive_summary') or auto_executive_summary(name,period,financial,roll,reserve,language)
+  heading('1. 运营概况' if cn else '1. Executive Summary')
+  text(summary)
+  heading('2. 入住率及租金收取情况' if cn else '2. Occupancy & Rent Collection')
+  if cn:
+    table(['指标','本期','上期','备注'],[
+      ['入住率',occ,extra.get('previous_occupancy') or '未提供',extra.get('occupancy_notes') or ''],
+      ['实收租金',money(extra.get('rent_collected')),money(extra.get('previous_rent_collected')),'实收金额，非应收租金'],
+      ['未收余额',money(extra.get('outstanding_balance')),money(extra.get('previous_outstanding')),'应收账款余额']])
+  else:
+    table(['Metric','Current Period','Previous Period','Notes'],[
+      ['Occupancy Rate',occ,extra.get('previous_occupancy') or 'Not provided',extra.get('occupancy_notes') or ''],
+      ['Rent Collected',money(extra.get('rent_collected')),money(extra.get('previous_rent_collected')),'Actual collections; not scheduled rent'],
+      ['Outstanding Balance',money(extra.get('outstanding_balance')),money(extra.get('previous_outstanding')),'Accounts receivable']])
+  heading('3. 财务汇总' if cn else '3. Financial Summary')
+  if cn:
+    table(['项目','金额 (USD)','备注'],[
+      ['营业总收入',money(income),'AppFolio 利润表'],['水电费收入',money(extra.get('utilities_income')),'如已包含在总收入中，不重复加计'],
+      ['运营费用',money(expenses),'AppFolio 利润表'],['净运营收入 (NOI)',money(noi),'收入减费用'],
+      ['本期应计提储备金',money(required),f'{months} 个月 × 每月房产税及保险储备']])
+  else:
+    table(['Item','Amount (USD)','Notes'],[
+      ['Total Income',money(income),'AppFolio Income Statement'],['Utilities Income',money(extra.get('utilities_income')),'Included in total income if applicable'],
+      ['Operating Expenses',money(expenses),'AppFolio Income Statement'],['Net Operating Income (NOI)',money(noi),'Income less expenses'],
+      ['Reserve Contribution Target',money(required),f'{months} month(s) × monthly tax/insurance target']])
+  heading('4. 分红及现金余额' if cn else '4. Distribution Details')
+  prior=extra.get('prior_balance');current=extra.get('current_balance')
+  # Closing cash includes designated reserve: do not label this difference as approved distribution.
+  net=(current-reserve_balance) if current is not None else None
+  if cn:
+    table(['项目','金额 (USD)','备注'],[
+      ['上期银行现金余额',money(prior),'管理员确认'],['本期银行现金余额',money(current),'管理员确认'],
+      ['银行已预留储备金',money(reserve_balance),'已记录的房产税及保险储备'],
+      ['扣除已预留资金后余额',money(net),'尚未扣除最低运营现金及其他承诺付款']])
+    text(f'最低运营现金：{money(reserve.get("Minimum Operating Cash"))}；储备金累计缺口：{money(reserve_gap)}。',bold=True)
+    text('实际分红金额须在银行对账、储备金补足、待付费用及管理层审核后确认。')
+  else:
+    table(['Item','Amount (USD)','Notes'],[
+      ['Total Balance Last Month',money(prior),'Admin-confirmed opening cash'],['Total Balance This Month',money(current),'Admin-confirmed closing cash'],
+      ['Cash Reserved in Bank',money(reserve_balance),'Recorded tax and insurance reserves'],
+      ['Cash After Earmarked Reserves',money(net),'Before minimum operating cash and other commitments']])
+    text(f'Minimum Operating Cash: {money(reserve.get("Minimum Operating Cash"))} | Reserve Shortfall: {money(reserve_gap)}',bold=True)
+    text('Final investor distributions require bank reconciliation, reserve funding, committed-obligation review and management approval.')
+  heading('5. 附件' if cn else '5. Appendix')
+  for label in (['• AppFolio 财务报表','• 现金及储备金明细','• Rent Roll（租赁清单）'] if cn else
+                ['• Detailed financial statements','• Detailed Balance and Reserve Report','• Rent Roll']):text(label)
+  text('附件仅列出，未自动合并到 Word。' if cn else 'Appendices are listed, not automatically embedded in this Word document.',9)
   bio=io.BytesIO();d.save(bio);return bio.getvalue()
 
 def build_pdf(name,period,financial,roll,reserve):
@@ -417,7 +445,7 @@ else:
    auto_summary=auto_executive_summary(selected[1],period,financial,roll,reserve,'中文' if language=='中文' else 'English',additional_summary)
    summary_key=f'rpt_summary_edit_{pid}_{period}_{language}'
    seed_key=summary_key+'_seed'
-   if st.session_state.get(seed_key)!=auto_summary:
+   if summary_key not in st.session_state:
     st.session_state[summary_key]=auto_summary
     st.session_state[seed_key]=auto_summary
    summary=st.text_area('Executive Summary (editable before export)',key=summary_key,height=220)
@@ -443,14 +471,18 @@ else:
          'utilities_income':util if cash_confirm else None,'prior_balance':prior if cash_confirm else None,
          'current_balance':current if cash_confirm else None}
   doc_bytes=build_docx(selected[1],period,financial,roll,reserve,language=('中文' if language=='中文' else 'English'),extra=extra)
+  doc_cn=build_docx(selected[1],period,financial,roll,reserve,language='中文',extra={**extra,'executive_summary':auto_executive_summary(selected[1],period,financial,roll,reserve,'中文',notes_cn)}) if language=='Both' else None
   if language=='中文':
    chi='Executive Summary / 经营摘要\n'+summary+'\n\n'+chi
   elif language=='Both':
    eng='Executive Summary\n'+summary+'\n\n'+eng
+   chi='经营概况\n'+auto_executive_summary(selected[1],period,financial,roll,reserve,'中文',notes_cn)+'\n\n'+chi
   else:
    eng='Executive Summary\n'+summary+'\n\n'+eng
   content=(eng if language=='English' else chi if language=='中文' else eng+'\n\n'+'='*25+'\n\n'+chi)
   st.download_button('⬇️ Download bilingual Word / 下载 Word',doc_bytes,file_name=f'Investor_Report_{pid}_{period.replace(" ","_")}.docx',mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+  if doc_cn:
+   st.download_button('⬇️ 下载中文 Word',doc_cn,file_name=f'Investor_Report_CN_{pid}_{period.replace(" ","_")}.docx',mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
   st.download_button('⬇️ Download email / WeChat text (.txt)',content.encode('utf-8-sig'),file_name=f'Investor_Message_{pid}.txt',mime='text/plain')
   st.markdown('**Email / 邮件发送**')
   st.caption('邮件仅在你主动确认并点击发送后发出。SMTP 凭据只在本次会话中使用，不写入数据库。')
