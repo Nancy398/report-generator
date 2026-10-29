@@ -22,29 +22,42 @@ def local_db():
 def excel_load(blob):
     x=pd.ExcelFile(io.BytesIO(blob));return {name:pd.read_excel(x,sheet_name=name,dtype=object).fillna('') for name in x.sheet_names if name in SHEETS}
 
-def sheet_client():
+GS_SPREADSHEET_NAME = "Reports"
+
+def get_gc_client():
+    """沿用现有支票系统的 Streamlit Secrets / Service Account 授权。"""
     import gspread
     from google.oauth2.service_account import Credentials
-    info=dict(st.secrets['gcp_service_account']);scopes=['https://www.googleapis.com/auth/spreadsheets','https://www.googleapis.com/auth/drive.readonly']
-    return gspread.authorize(Credentials.from_service_account_info(info,scopes=scopes))
+    scope = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
+    creds_dict = dict(st.secrets["GOOGLE_APPLICATION_CREDENTIALS"])
+    if "private_key" in creds_dict:
+        creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+    credentials = Credentials.from_service_account_info(creds_dict, scopes=scope)
+    return gspread.authorize(credentials)
 
-def book_open(link):
-    m=re.search(r'/spreadsheets/d/([\w-]+)',link)
-    return sheet_client().open_by_key(m.group(1) if m else link.strip())
+def book_open():
+    return get_gc_client().open(GS_SPREADSHEET_NAME)
 
-def google_load(link):
-    book=book_open(link);data={}
+def google_load():
+    book = book_open()
+    data = {}
     for title in SHEETS:
-        try:ws=book.worksheet(title)
-        except Exception:continue
-        records=ws.get_all_records(default_blank='')
-        data[title]=pd.DataFrame(records)
+        try:
+            ws = book.worksheet(title)
+        except Exception as exc:
+            if title in ('Properties', 'Monthly Statements'):
+                raise ValueError(f"Reports 缺少必要工作表 {title}: {exc}") from exc
+            continue
+        data[title] = pd.DataFrame(ws.get_all_records(default_blank=''))
     return data
 
 def records(df):return df.fillna('').to_dict('records') if df is not None and not df.empty else []
 
-def store_google(link,rec):
-    book=book_open(link);ws=book.worksheet('Monthly Statements')
+def store_google(rec):
+    book=book_open();ws=book.worksheet('Monthly Statements')
     heads=ws.row_values(1)
     if not heads:raise ValueError('Monthly Statements 缺少表头')
     missing=[k for k in rec if k not in heads]
@@ -73,20 +86,20 @@ def local_records():
 
 with st.sidebar:
     st.header('数据来源')
-    source=st.radio('Master 数据', ['上传 Excel（本机测试）','Google Sheets（在线）'])
-    link='';data=None
+    source=st.radio('Master 数据', ['Google Sheets（Reports）','上传 Excel（本机测试）'])
+    data=None
     if source.startswith('上传'):
         file=st.file_uploader('上传 Moo_Housing_Master.xlsx',type=['xlsx','xlsm'],key='master')
         if file:
             try:data=excel_load(file.getvalue())
             except Exception as e:st.error(str(e))
     else:
-        link=st.text_input('Google Sheets URL / ID',value=st.secrets.get('google_sheet_url',''))
-        if st.button('读取 / 刷新 Google Sheets'):
-            try:st.session_state['google_data']=google_load(link);st.success('已读取')
+        st.caption('自动连接 Google Sheets：Reports')
+        if st.button('读取 / 刷新 Reports') or 'google_data' not in st.session_state:
+            try:st.session_state['google_data']=google_load();st.success('已连接 Reports')
             except Exception as e:st.error(f'读取失败：{e}')
         data=st.session_state.get('google_data')
-    st.caption('Google Sheets 文件建议命名：Moo Housing - Investor Reporting Master。在线保存需要 Service Account Editor 权限。')
+    st.caption('固定读取名为 Reports 的 Google Sheets；请将其共享给 Service Account（Editor）。')
 if not data or 'Properties' not in data or 'Monthly Statements' not in data:
     st.info('请先上传压缩包中的 Master Excel，或连接 Google Sheets。');st.stop()
 props=records(data['Properties']);sheet_monthly=records(data['Monthly Statements'])
@@ -172,7 +185,7 @@ if st.button('💾 Save to Google Sheets' if source.startswith('Google') else '�
     if status=='Confirmed' and (not bank_known or not income_file or not rent_file):st.error('Confirmed 必须提供两份 AppFolio 报表和核对银行余额。')
     else:
         try:
-            if source.startswith('Google'):store_google(link,rec);st.success('已保存到 Google Sheets。请点击侧栏刷新读取。')
+            if source.startswith('Google'):store_google(rec);st.success('已保存到 Google Sheets。请点击侧栏刷新读取。')
             else:store_local(rec);st.success('已保存到本机 SQLite 数据库。Excel 文件本身未被修改；切换电脑不会自动同步。')
         except Exception as e:st.error(f'保存失败：{e}')
 
