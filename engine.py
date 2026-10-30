@@ -47,39 +47,61 @@ def parse_income(sheets):
     return d
 
 def parse_rent_roll(sheets):
-    best=None
+    """Count actual room records; ignore AppFolio property/building/floor headings.
+
+    A whole-unit lease counts its underlying rooms as occupied only when the
+    corresponding parent row actually has a tenant and a non-vacant status.
+    """
+    best = None
     for df in sheets:
-        for i in range(min(len(df),45)):
-            cells=[str(x).strip().lower() for x in df.iloc[i]]
+        for i in range(min(len(df), 45)):
+            cells = [str(x).strip().lower() for x in df.iloc[i]]
             if 'unit' in cells and 'tenant' in cells:
-                best=(df,i,cells);break
-        if best:break
-    if not best:raise ValueError('Rent Roll 未找到 Unit / Tenant 表头；请检查 AppFolio 格式。')
-    df,hi,head=best
-    ix=head.index('unit');tx=head.index('tenant');sx=next((j for j,h in enumerate(head) if 'status' in h),None)
-    groups={};standalone=[];unknown=[]
-    for _,row in df.iloc[hi+1:].iterrows():
-        vals=list(row);unit=str(vals[ix]).strip();tenant=str(vals[tx]).strip();status=str(vals[sx]).strip().lower() if sx is not None else ''
-        if not unit or unit.lower().startswith(('total','unit count','property:')):continue
-        occupied=bool(tenant and tenant.lower() not in ('nan','vacant','none','-') and 'vacant' not in status)
-        # Example: 1223 - 1223 is master lease; 1223 - RM 1 is room.
-        m=re.match(r'^(.+?)\s+-\s+(.+)$',unit)
+                best = (df, i, cells)
+                break
+        if best:
+            break
+    if not best:
+        raise ValueError('Rent Roll 未找到 Unit / Tenant 表头')
+    df, hi, head = best
+    ix, tx = head.index('unit'), head.index('tenant')
+    sx = next((j for j, h in enumerate(head) if 'status' in h), None)
+    rows = []
+    for _, row in df.iloc[hi + 1:].iterrows():
+        vals = list(row)
+        unit = str(vals[ix]).strip()
+        if not unit or unit.lower() in ('nan', 'none') or unit.lower().startswith(('total', 'units:', 'property:')):
+            continue
+        tenant = str(vals[tx]).strip()
+        status = str(vals[sx]).strip().lower() if sx is not None else ''
+        occupied = (tenant.lower() not in ('', 'nan', 'none', '-', 'vacant')
+                    and not status.startswith('vacant'))
+        rows.append((unit, occupied, status))
+    # AppFolio exports e.g. '1186 W 37th Pl FFL 2 - Rm 1'.
+    # Only a suffix that is an actual room/bed identifier counts as a room.
+    room_pattern = re.compile(r'^(.*?)\s+-\s+(?:rm|room|bed)\s*[-#]?\s*\w+', re.I)
+    room_rows = []
+    parent_occupied = {}
+    for unit, occupied, status in rows:
+        m = room_pattern.match(unit)
         if m:
-            base,tail=m.group(1).strip(),m.group(2).strip()
-            g=groups.setdefault(base,{'master':None,'rooms':[]})
-            if re.match(r'(?i)^(?:rm|room|bed)\s*[-#]?\s*\w+',tail):g['rooms'].append(occupied)
-            elif tail.lower()==base.lower() or tail.lower() in ('whole','master','整租'):g['master']=occupied
-            else:unknown.append(unit)
-        else:standalone.append(occupied)
-    rooms=sum(len(g['rooms']) for g in groups.values())+len(standalone)
-    occupied=sum(sum(g['rooms']) if not g['master'] else len(g['rooms']) for g in groups.values())+sum(standalone)
-    warnings=[]
-    for base,g in groups.items():
-        if g['master'] and any(g['rooms']):warnings.append(f'{base}: 整租和单间同时显示已出租，已按整租计算，请核实。')
-        if not g['rooms']:warnings.append(f'{base}: 有整租行但没有可识别房间，未计入房间数。')
-    if unknown:warnings.append(f'{len(unknown)} 个 Unit 命名未识别，未纳入入住率：'+', '.join(unknown[:4]))
-    if rooms==0:raise ValueError('未找到可统计的房间；请检查 Rent Roll 的 Unit 命名。')
-    return {'rooms':rooms,'occupied':occupied,'vacant':rooms-occupied,'occupancy':occupied/rooms,'warnings':warnings}
+            room_rows.append((m.group(1).strip().lower(), occupied))
+        else:
+            # Parent rows often say Vacant-Unrented even when their rooms are leased.
+            # Such parent rows are NOT additional rentable rooms.
+            if occupied:
+                parent_occupied[unit.split(' - ')[0].strip().lower()] = True
+    if not room_rows:
+        raise ValueError('未找到可统计的房间 (Rm / Room / Bed)')
+    total = len(room_rows)
+    occupied_count = sum(occupied or parent_occupied.get(base, False)
+                         for base, occupied in room_rows)
+    warnings = []
+    if any(is_occupied for unit, is_occupied, status in rows if not room_pattern.match(unit)):
+        warnings.append('检测到已出租整租主行，按其下属房间计算，不重复计数。')
+    return {'rooms': total, 'occupied': occupied_count,
+            'vacant': total - occupied_count,
+            'occupancy': occupied_count / total, 'warnings': warnings}
 
 def calculate(properties, statements):
     """One property-month row, chronological. Tax/insurance payments reduce required reserve.
