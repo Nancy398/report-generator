@@ -5,11 +5,12 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 from engine import number,pid,period,read_appfolio,parse_income,parse_rent_roll,calculate
-from reporting import make_docx,make_pdf
+from reporting import make_docx,make_pdf,append_pdf_documents
+from pdf_appfolio import parse_income_pdf,parse_rent_roll_pdf
 
 st.set_page_config(page_title='Moo Housing | Investor Report Generator',layout='wide')
 st.title('MOO HOUSING · Investor Report Generator')
-st.caption('AppFolio Excel → NOI / Occupancy → Cash & Reserve → Save → Word / PDF')
+st.caption('AppFolio PDF → NOI / Occupancy → Cash & Reserve → Word / PDF with original PDF appendices')
 HERE=Path(__file__).parent
 SHEETS=['Properties','Monthly Statements','Investors','Distribution History']
 DB=Path('/tmp')/'moo_local_records.sqlite3'
@@ -115,17 +116,23 @@ st.caption(f"{p.get('Property Address','')}  |  Report Language: {p.get('Report 
 month=st.text_input('Reporting Month (YYYY-MM)',value=datetime.now().strftime('%Y-%m'))
 if not re.fullmatch(r'\d{4}-(0[1-9]|1[0-2])',month):st.error('月份格式必须是 YYYY-MM');st.stop()
 
-st.subheader('1 · 上传 AppFolio 报表')
+st.subheader('1 · 上传 AppFolio PDF 报表')
 a,b=st.columns(2)
-with a:income_file=st.file_uploader('AppFolio Income Statement Excel',type=['xlsx','xls'],key='inc')
-with b:rent_file=st.file_uploader('AppFolio Rent Roll Excel',type=['xlsx','xls'],key='roll')
+with a:income_file=st.file_uploader('AppFolio Income Statement PDF',type=['pdf'],key='inc')
+with b:rent_file=st.file_uploader('AppFolio Rent Roll PDF',type=['pdf'],key='roll')
+st.caption('两份 PDF 同时用于识别数据，并自动按 Income Statement → Rent Roll 顺序附在最终 PDF 后面。无需单独上传 Appendix。')
+appendix_files=[f for f in (income_file,rent_file) if f is not None]
 financial=None;occupancy=None
 if income_file:
-    try:financial=parse_income(read_appfolio(income_file))
-    except Exception as e:st.error(f'Income Statement: {e}')
+    try:financial=parse_income_pdf(income_file.getvalue())
+    except Exception as e:st.error(f'Income Statement PDF 识别失败：{e}')
 if rent_file:
-    try:occupancy=parse_rent_roll(read_appfolio(rent_file))
-    except Exception as e:st.error(f'Rent Roll: {e}')
+    try:occupancy=parse_rent_roll_pdf(rent_file.getvalue())
+    except Exception as e:st.error(f'Rent Roll PDF 识别失败：{e}')
+for label,record in [('Income Statement',financial),('Rent Roll',occupancy)]:
+    if record and record.get('period') and record['period']!=month:
+        st.error(f'{label} 的报表月份为 {record["period"]}，当前选择 {month}。请修改 Reporting Month，否则不能保存或生成正式报告。')
+period_mismatch=any(x and x.get('period') and x['period']!=month for x in (financial,occupancy))
 if financial:
     st.write('AppFolio 识别结果',{'Income':financial.get('income'),'Expenses':financial.get('expenses'),'NOI':financial.get('noi')})
     if all(financial.get(x) is not None for x in ['income','expenses','noi']) and abs(financial['income']-financial['expenses']-financial['noi'])>.05:
@@ -177,6 +184,13 @@ for issue in issues:st.warning(issue)
 match=[r for r in rows if r['Property ID']==selected and r['Month (YYYY-MM)']==month]
 if not match:st.stop()
 r=match[0]
+from datetime import date
+report_year,report_month=map(int,month.split('-'))
+prior_month=f'{report_year-1:04d}-12' if report_month==1 else f'{report_year:04d}-{report_month-1:02d}'
+prior_row=next((x for x in rows if pid(x.get('Property ID'))==selected and period(x.get('Month (YYYY-MM)'))==prior_month),None)
+# If no calculated historical row exists, use saved source data (never fabricate).
+if prior_row is None:
+    prior_row=next((x for x in combined if pid(x.get('Property ID'))==selected and period(x.get('Month (YYYY-MM)'))==prior_month),None)
 st.subheader('3 · 自动计算结果')
 x,y,z,w=st.columns(4)
 x.metric('NOI',f"${r['NOI']:,.2f}");y.metric('Ending Cash',f"${r['Ending Cash']:,.2f}");z.metric('Required Reserve',f"${r['Required Reserve']:,.2f}");w.metric('Shortfall' if r['Reserve Shortfall']>0 else 'Available Distribution',f"${max(r['Reserve Shortfall'],r['Available to Distribute']):,.2f}")
@@ -184,7 +198,7 @@ st.dataframe(pd.DataFrame([r]),hide_index=True,use_container_width=True)
 if not bank_known:st.warning('银行余额尚未核对。Ending Cash 是根据 NOI 推算的金额，不能视为已确认可分红现金。')
 if r['Reserve Shortfall']>0:st.error('存在 Reserve Shortfall，建议暂停分红。')
 if status=='Confirmed' and (not bank_known or not income_file or not rent_file):st.warning('确认状态要求上传两份 AppFolio 报表并核对银行余额。')
-if st.button('💾 Save to Google Sheets' if source.startswith('Google') else '💾 Save locally (Excel 模式)'):
+if st.button('💾 Save to Google Sheets' if source.startswith('Google') else '💾 Save locally (Excel 模式)',disabled=period_mismatch):
     if status=='Confirmed' and (not bank_known or not income_file or not rent_file):st.error('Confirmed 必须提供两份 AppFolio 报表和核对银行余额。')
     else:
         try:
@@ -193,22 +207,29 @@ if st.button('💾 Save to Google Sheets' if source.startswith('Google') else '�
         except Exception as e:st.error(f'保存失败：{e}')
 
 st.subheader('4 · Investor Report 下载')
-if not income_file or not rent_file:st.info('未同时上传两份 AppFolio 报表，以下报告为待核对草稿。')
+if not income_file or not rent_file:st.info('未同时上传两份 AppFolio PDF 报表，以下报告为待核对草稿。')
+if period_mismatch:st.error('报表月份不一致：请先修改 Reporting Month，下载功能已停用。')
 lang=str(p.get('Report Language','English')).strip().lower()
 languages=['中文','English'] if lang in ('both','bilingual','中英文') else (['中文'] if lang in ('中文','chinese','cn') else ['English'])
 for language in languages:
     cn=language=='中文';stem=f"Moo_{selected}_{month}_{'CN' if cn else 'EN'}"
     try:
-        d=make_docx(r,p,cn)
+        if period_mismatch:continue
+        appendix_documents=[]
+        if income_file: appendix_documents.append(('AppFolio Income Statement', month))
+        if rent_file: appendix_documents.append(('AppFolio Rent Roll', 'As of '+(month+' month-end')))
+        d=make_docx(r,p,cn,previous=prior_row,appendix_documents=appendix_documents)
         try:
-            pdf=make_pdf(r,p,cn)
+            pdf=make_pdf(r,p,cn,previous=prior_row,appendix_documents=appendix_documents)
+            if appendix_files:
+                pdf=append_pdf_documents(pdf,[(f.name,f.getvalue()) for f in appendix_files])
         except Exception as pdf_error:
             pdf=None
             st.info(f'Word report ready. PDF unavailable: {pdf_error}')
         left,right=st.columns(2)
         left.download_button(f'{language} · Download Word',d,stem+'.docx',mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',key='doc'+language)
         if pdf is not None:
-            right.download_button(f'{language} · Download PDF',pdf,stem+'.pdf',mime='application/pdf',key='pdf'+language)
+            right.download_button(f"{language} · Download PDF + Appendix",pdf,stem+".pdf",mime="application/pdf",key="pdf"+language)
     except Exception as e:st.error(f'{language} 报告生成失败：{e}')
 st.subheader('5 · 历史月度记录')
 if rows:st.dataframe(pd.DataFrame([x for x in rows if x['Property ID']==selected]).sort_values('Month (YYYY-MM)'),hide_index=True,use_container_width=True)
