@@ -12,7 +12,7 @@ st.title('MOO HOUSING · Investor Report Generator')
 st.caption('AppFolio Excel → NOI / Occupancy → Cash & Reserve → Save → Word / PDF')
 HERE=Path(__file__).parent
 SHEETS=['Properties','Monthly Statements','Investors','Distribution History']
-DB=HERE/'moo_local_records.sqlite3'
+DB=Path('/tmp')/'moo_local_records.sqlite3'
 
 def local_db():
     con=sqlite3.connect(DB)
@@ -96,10 +96,12 @@ with st.sidebar:
             except Exception as e:st.error(str(e))
     else:
         st.caption('自动连接 Google Sheets：Reports')
-        if st.button('读取 / 刷新 Reports') or 'google_data' not in st.session_state:
+        if st.button('读取 / 刷新 Reports'):
             try:st.session_state['google_data']=google_load();st.success('已连接 Reports')
             except Exception as e:st.error(f'读取失败：{e}')
         data=st.session_state.get('google_data')
+        if data is None:
+            st.info('点击「读取 / 刷新 Reports」后再连接 Google Sheets。')
     st.caption('固定读取名为 Reports 的 Google Sheets；请将其共享给 Service Account（Editor）。')
 if not data or 'Properties' not in data or 'Monthly Statements' not in data:
     st.info('请先上传压缩包中的 Master Excel，或连接 Google Sheets。');st.stop()
@@ -155,7 +157,7 @@ with st.form('monthly'):
     st.caption('银行余额请从银行核对；不填写则仅提供根据 NOI 推算的现金余额，不能用于正式分红。')
     bank_known=st.checkbox('我已核对本月期末银行余额',value=str(previous.get('Verified Ending Bank Balance','')).strip()!='')
     bank=st.number_input('Verified Ending Bank Balance',value=float(number(previous.get('Verified Ending Bank Balance'))),format='%.2f',disabled=not bank_known)
-    notes=st.text_area('Notes / Operating Commentary',value=str(previous.get('Notes','')))
+    notes=st.text_area('1. Summary — 自己填写（留空则使用自动生成的简短摘要）',value=str(previous.get('Notes','')),height=180,help='此内容将原样写入报告 Summary，不会与自动摘要拼接。支持多段文字。')
     status=st.selectbox('保存状态',['Draft','Confirmed'],index=0)
     submit=st.form_submit_button('计算 / Preview')
 
