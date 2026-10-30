@@ -200,18 +200,61 @@ def make_docx(row, p, cn=False, previous=None, appendix_documents=None):
     output=io.BytesIO();doc.save(output);return output.getvalue()
 
 
-def make_pdf(row,p,cn=False,previous=None):
-    # Use Word-to-PDF conversion, preserving the exact template. This requires LibreOffice.
-    binary=shutil.which('libreoffice') or shutil.which('soffice')
+def make_pdf(row, p, cn=False, previous=None, appendix_documents=None):
+    # Convert Word to PDF and attach the original AppFolio PDFs.
+    binary = shutil.which("libreoffice") or shutil.which("soffice")
+
     if not binary:
-        raise RuntimeError('PDF conversion requires LibreOffice. Download the Word report or deploy with LibreOffice support.')
+        raise RuntimeError("PDF conversion requires LibreOffice.")
+
+    if appendix_documents is None:
+        appendix_documents = []
+
     with tempfile.TemporaryDirectory() as tmp:
-        input_path=Path(tmp)/'investor_report.docx'
-        input_path.write_bytes(make_docx(row,p,cn,previous=previous))
-        proc=subprocess.run([binary,'-env:UserInstallation=file://'+tmp+'/lo_profile','--headless','--convert-to','pdf','--outdir',tmp,str(input_path)],capture_output=True,text=True,timeout=90)
-        pdf=Path(tmp)/'investor_report.pdf'
-        if proc.returncode or not pdf.exists(): raise RuntimeError(f'Word-to-PDF conversion failed: {proc.stderr}')
-        return pdf.read_bytes()
+        input_path = Path(tmp) / "investor_report.docx"
+
+        input_path.write_bytes(
+            make_docx(
+                row,
+                p,
+                cn=cn,
+                previous=previous,
+                appendix_documents=appendix_documents
+            )
+        )
+
+        proc = subprocess.run(
+            [
+                binary,
+                "-env:UserInstallation=file://" + tmp + "/lo_profile",
+                "--headless",
+                "--convert-to",
+                "pdf",
+                "--outdir",
+                tmp,
+                str(input_path)
+            ],
+            capture_output=True,
+            text=True,
+            timeout=90
+        )
+
+        pdf_path = Path(tmp) / "investor_report.pdf"
+
+        if proc.returncode != 0 or not pdf_path.exists():
+            raise RuntimeError(
+                f"Word-to-PDF conversion failed: {proc.stderr}"
+            )
+
+        report_pdf = pdf_path.read_bytes()
+
+        if appendix_documents:
+            report_pdf = append_pdf_documents(
+                report_pdf,
+                appendix_documents
+            )
+
+        return report_pdf
 
 
 def append_pdf_documents(report_pdf, attachments):
