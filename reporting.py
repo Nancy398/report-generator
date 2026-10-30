@@ -1,69 +1,157 @@
+"""Investor reports built from the actual 1438 Word master, not a visual recreation."""
 import io
-from docx import Document
-from docx.shared import Inches,Pt,RGBColor
-from reportlab.platypus import SimpleDocTemplate,Paragraph,Spacer,Table,TableStyle,PageBreak
-from reportlab.lib import colors
-from reportlab.lib.styles import getSampleStyleSheet,ParagraphStyle
-from reportlab.lib.enums import TA_CENTER
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
+import os
+import shutil
+import subprocess
+import tempfile
+from copy import deepcopy
 from pathlib import Path
+from datetime import datetime
+from docx import Document
+from docx.text.paragraph import Paragraph
+from docx.table import Table
 
-def narrative(row,cn):
-    occ=row.get('Occupancy');vac=row.get('Total Rooms')
-    if occ is None:return '本期未提供可核对的 Rent Roll，出租率尚未确认。' if cn else 'Rent Roll was not provided; occupancy is pending verification.'
-    rate=f'{occ:.1%}'
-    if cn:return f'本期房间出租率为 {rate}。'+('截至本期存在现金储备缺口，建议暂缓分红，优先补足储备。' if row['Reserve Shortfall']>0 else '当前现金超过累计所需储备，超出部分可供分红审核。')
-    return f'Room occupancy for the reporting period was {rate}. '+('Cash is below the required reserve; distributions should be deferred pending reserve replenishment.' if row['Reserve Shortfall']>0 else 'Cash exceeds the required reserve; excess cash may be reviewed for distribution.')
+MASTER = Path(__file__).with_name('1438_template.docx')
 
-def sections(row,p,cn):
-    money=lambda v:f'${float(v or 0):,.2f}'
-    fin=[('营业收入' if cn else 'Total Income',money(row['Income'])),('运营费用' if cn else 'Operating Expenses',money(row['Expenses'])),('净运营收入（NOI）' if cn else 'Net Operating Income (NOI)',money(row['NOI']))]
-    ops=[('房间出租率' if cn else 'Room Occupancy',f"{row['Occupancy']:.1%}" if row.get('Occupancy') is not None else 'N/A'),('已出租 / 总房间' if cn else 'Occupied / Total Rooms',f"{int(row['Occupied Rooms'])} / {int(row['Total Rooms'])}" if row.get('Total Rooms') is not None else 'N/A')]
-    cash=[('期末现金余额' if cn else 'Ending Cash Balance',money(row['Ending Cash'])),('累计应保留储备' if cn else 'Required Reserve Balance',money(row['Required Reserve']))]
-    if row['Reserve Shortfall']>0:cash.append(('储备缺口' if cn else 'Reserve Shortfall',money(row['Reserve Shortfall'])))
-    cash += [('可供分红审核现金' if cn else 'Cash Available for Distribution Review',money(row['Available to Distribute'])),('本期已支付分红' if cn else 'Distribution Paid This Period',money(row['Distribution Paid']))]
-    return [('01  财务表现' if cn else '01  Financial Performance',fin),('02  运营表现' if cn else '02  Operating Performance',ops),('03  现金及储备' if cn else '03  Cash & Reserve Summary',cash)]
 
-def make_docx(row,p,cn):
-    d=Document();sec=d.sections[0];sec.top_margin=Inches(.8);sec.bottom_margin=Inches(.7)
-    style=d.styles['Normal'];style.font.name='Calibri';style.font.size=Pt(10)
-    d.add_paragraph('MOO HOUSING INC.','Subtitle')
-    d.add_heading('投资人财务报告' if cn else 'INVESTOR FINANCIAL REPORT',0)
-    d.add_paragraph(str(p.get('Property Name / LLC','')))
-    d.add_paragraph(str(p.get('Property Address','')))
-    d.add_paragraph(('报告期间：' if cn else 'Reporting Period: ')+row['Month (YYYY-MM)'])
-    d.add_paragraph('CONFIDENTIAL / 仅供投资人审阅')
-    d.add_page_break()
-    for heading,items in sections(row,p,cn):
-        d.add_heading(heading,level=1)
-        t=d.add_table(rows=0,cols=2);t.style='Light Shading Accent 1'
-        for k,v in items:
-            a,b=t.add_row().cells;a.text=k;b.text=v
-        d.add_paragraph('')
-    d.add_heading('04  经营总结' if cn else '04  Operating Commentary',level=1)
-    d.add_paragraph(narrative(row,cn))
-    d.add_paragraph('注：NOI 不一定等于现金流。储备不是额外的 P&L 费用；分红前应核对银行余额和未付款项。' if cn else 'Note: NOI is not necessarily cash flow. Reserve designations are not additional P&L expenses. Verify bank cash and outstanding obligations before distribution.')
-    out=io.BytesIO();d.save(out);return out.getvalue()
+def _get(row, *names, default='Not provided'):
+    for name in names:
+        val = row.get(name)
+        if val is not None and str(val).strip() != '':
+            return val
+    return default
 
-def make_pdf(row,p,cn):
-    font='Helvetica'
-    for candidate in ['/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc','/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc','/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf']:
-        if Path(candidate).exists():
-            try:pdfmetrics.registerFont(TTFont('MooUnicode',candidate));font='MooUnicode';break
-            except Exception:pass
-    if cn and font=='Helvetica':
-        from reportlab.pdfbase.cidfonts import UnicodeCIDFont
-        pdfmetrics.registerFont(UnicodeCIDFont('STSong-Light'));font='STSong-Light'
-    styles=getSampleStyleSheet();styles.add(ParagraphStyle(name='MooTitle',parent=styles['Title'],fontName=font,fontSize=20,leading=28,textColor=colors.HexColor('#183451')))
-    styles.add(ParagraphStyle(name='MooBody',parent=styles['Normal'],fontName=font,fontSize=10,leading=16))
-    styles.add(ParagraphStyle(name='MooHead',parent=styles['Heading2'],fontName=font,textColor=colors.HexColor('#183451')))
-    buf=io.BytesIO();doc=SimpleDocTemplate(buf,pagesize=(595,842),leftMargin=48,rightMargin=48,topMargin=48,bottomMargin=48)
-    story=[Paragraph('MOO HOUSING INC.',styles['MooHead']),Spacer(1,70),Paragraph('投资人财务报告' if cn else 'INVESTOR FINANCIAL REPORT',styles['MooTitle']),Spacer(1,30),Paragraph(str(p.get('Property Name / LLC','')),styles['MooBody']),Paragraph(str(p.get('Property Address','')),styles['MooBody']),Paragraph(row['Month (YYYY-MM)'],styles['MooBody']),Spacer(1,60),Paragraph('CONFIDENTIAL',styles['MooBody']),PageBreak()]
-    for heading,items in sections(row,p,cn):
-        story.append(Paragraph(heading,styles['MooHead']))
-        table=Table([[Paragraph(str(k),styles['MooBody']),Paragraph(str(v),styles['MooBody'])] for k,v in items],colWidths=[330,160],hAlign='LEFT')
-        table.setStyle(TableStyle([('ROWBACKGROUNDS',(0,0),(-1,-1),[colors.white,colors.HexColor('#EDF3F7')]),('BOTTOMPADDING',(0,0),(-1,-1),9),('TOPPADDING',(0,0),(-1,-1),9)]))
-        story.extend([table,Spacer(1,16)])
-    story.extend([Paragraph('04  经营总结' if cn else '04  Operating Commentary',styles['MooHead']),Paragraph(narrative(row,cn),styles['MooBody']),Spacer(1,20),Paragraph('NOI 不等于现金流；正式分红前须核对银行及未付款项。' if cn else 'NOI is not necessarily cash flow. Verify bank cash and obligations before distribution.',styles['MooBody'])]);doc.build(story)
-    return buf.getvalue()
+
+def _cash(v):
+    try: return '${:,.2f}'.format(float(str(v).replace(',','').replace('$','')))
+    except (TypeError, ValueError): return 'Not provided'
+
+
+def _pct(v):
+    try:
+        n=float(v)
+        return f'{n*100 if n<=1 else n:.1f}%'
+    except (TypeError, ValueError): return 'Not provided'
+
+
+def _replace_para(p, new_text):
+    # Retain paragraph formatting and first run's character formatting.
+    if p.runs:
+        p.runs[0].text = str(new_text)
+        for run in p.runs[1:]: run.text = ''
+    else: p.add_run(str(new_text))
+
+
+def _clone_paragraph(doc, source_element, text=None):
+    el=deepcopy(source_element)
+    doc.element.body.insert(len(doc.element.body)-1, el)
+    p=Paragraph(el,doc)
+    if text is not None: _replace_para(p,text)
+    return p
+
+
+def _clone_table(doc, source_element, headings, data, total_last=False):
+    el=deepcopy(source_element)
+    doc.element.body.insert(len(doc.element.body)-1,el)
+    table=Table(el,doc)
+    while len(table.rows)>1:
+        table._tbl.remove(table.rows[-1]._tr)
+    template_row=deepcopy(source_element.findall('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tr')[1])
+    for item in data:
+        table._tbl.append(deepcopy(template_row))
+    for ri, vals in enumerate([headings]+data):
+        for ci, val in enumerate(vals):
+            if ci>=len(table.rows[ri].cells): continue
+            cell=table.rows[ri].cells[ci]
+            _replace_para(cell.paragraphs[0],val)
+            for extra in cell.paragraphs[1:]: _replace_para(extra,'')
+    if total_last and data:
+        # Copy the master table's original total-row shading and bold emphasis.
+        original_rows=source_element.findall('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tr')
+        if len(original_rows)>2:
+            last=deepcopy(original_rows[-1])
+            table._tbl.replace(table.rows[-1]._tr,last)
+            for ci,val in enumerate(data[-1]):
+                _replace_para(table.rows[-1].cells[ci].paragraphs[0],val)
+    return table
+
+
+def make_docx(row,p,cn=False):
+    if not MASTER.exists(): raise FileNotFoundError('1438_template.docx must be beside reporting.py')
+    doc=Document(MASTER)
+    originals=[deepcopy(e) for e in doc.element.body]
+    # Keep the original cover (including logo, fonts and spacing), replace content only.
+    prop=str(_get(p,'Property Name / LLC','Property Name',default='PROPERTY NAME'))
+    addr=str(_get(p,'Property Address',default='Los Angeles, California'))
+    period=str(_get(row,'Month (YYYY-MM)',default=datetime.now().strftime('%Y-%m')))
+    try: report_date=datetime.strptime(period[:7],'%Y-%m').strftime('%B %Y')
+    except ValueError: report_date=period
+    cover={3:'Project Overview, Operations & Distribution Summary',4:prop.upper(),5:addr,7:report_date}
+    for i,txt in cover.items(): _replace_para(Paragraph(doc.element.body[i],doc),txt)
+    for e in list(doc.element.body)[12:-1]: doc.element.body.remove(e)
+
+    occupancy=_pct(_get(row,'Occupancy'))
+    occupied=_get(row,'Occupied Rooms')
+    total=_get(row,'Total Rooms')
+    try: vacant=str(int(float(total))-int(float(occupied)))
+    except (ValueError,TypeError): vacant='Not provided'
+    summary=str(_get(row,'Summary','Executive Summary','Notes',default=''))
+    if not summary.strip(): summary='[Enter your Executive Summary in the Streamlit Summary field.]'
+    rent=_cash(_get(row,'Rent Collected','Rent Collection','Collected Rent'))
+    ar=_cash(_get(row,'Outstanding AR','Accounts Receivable','AR'))
+    income=_cash(_get(row,'Income','Total Income'))
+    expenses=_cash(_get(row,'Expenses','Operating Expenses'))
+    noi=_cash(_get(row,'NOI'))
+    cash=_cash(_get(row,'Ending Cash'))
+    reserve=_cash(_get(row,'Required Reserve'))
+    shortfall=_cash(_get(row,'Reserve Shortfall'))
+    available=_cash(_get(row,'Available to Distribute'))
+    distribution=_cash(_get(row,'Distribution Paid'))
+    sections=[
+      ('01  EXECUTIVE SUMMARY',summary,[('KEY FINANCIAL HIGHLIGHTS',['FINANCIAL METRIC','AMOUNT'],[
+          ('Occupancy Rate',occupancy),('Total Income',income),('Net Operating Income (NOI)',noi),('Available for Distribution Review',available)])]),
+      ('02  OCCUPANCY & RENT COLLECTION','Occupancy and collection results for the reporting month.',[
+          ('OCCUPANCY & COLLECTION',['METRIC','CURRENT MONTH'],[
+            ('Occupancy Rate',occupancy),('Occupied Rooms',str(occupied)),('Vacant Rooms',vacant),('Total Rooms',str(total)),('Rent Collected',rent),('Outstanding Balance',ar)])]),
+      ('03  FINANCIAL SUMMARY','Operating results shown below are based on the supplied financial records.',[
+          ('OPERATING RESULTS',['ITEM','AMOUNT'],[('Total Income',income),('Operating Expenses',expenses),('Net Operating Income (NOI)',noi)]),
+          ('CASH & RESERVES',['ITEM','AMOUNT'],[('Ending Cash Balance',cash),('Required Reserve',reserve),('Reserve Shortfall',shortfall)])]),
+      ('04  DISTRIBUTION DETAILS','Distributions are subject to management approval, cash verification and unpaid obligations.',[
+          ('DISTRIBUTION OVERVIEW',['CASH POSITION','USD'],[('Ending Cash Balance',cash),('Less: Required Reserve',reserve),('Available for Distribution Review',available),('Distribution Paid This Period',distribution)])]),
+      ('APPENDIX','Supporting data and financial statements may be attached separately.',[
+          ('SOURCE & RECONCILIATION',['ITEM','DETAILS'],[('Property',prop),('Reporting Period',period),('Verified Ending Bank Balance',_cash(_get(row,'Verified Ending Bank Balance'))),('Property Tax Paid',_cash(_get(row,'Property Tax Paid'))),('Insurance Paid',_cash(_get(row,'Insurance Paid'))),('Other Cash Adjustments',_cash(_get(row,'Other Cash Adjustments')))])])
+    ]
+    for idx,(heading,body,blocks) in enumerate(sections):
+        if idx: doc.add_page_break()
+        # The original page-top banner is a body paragraph with embedded logo; clone exactly.
+        banner=_clone_paragraph(doc, originals[12])
+        for run in banner.runs:
+            if '1438 West 37th Drive' in run.text:
+                run.text=run.text.replace('1438 West 37th Drive · Los Angeles, CA',f'{prop} · {addr}')
+        title=_clone_paragraph(doc, originals[13])
+        if len(title.runs)>=2:
+            parts=heading.split('  ',1)
+            title.runs[0].text=(parts[0]+'  ') if len(parts)==2 else ''
+            title.runs[1].text=parts[1] if len(parts)==2 else heading
+            for run in title.runs[2:]: run.text=''
+        else: _replace_para(title,heading)
+        _clone_paragraph(doc, originals[14],body)
+        for j,(subtitle,cols,items) in enumerate(blocks):
+            _clone_paragraph(doc, originals[16],subtitle)
+            _clone_table(doc,originals[17],cols,items,total_last=(idx in (0,2,3) and j==len(blocks)-1))
+            _clone_paragraph(doc, originals[18], '')
+    output=io.BytesIO();doc.save(output);return output.getvalue()
+
+
+def make_pdf(row,p,cn=False):
+    # Use Word-to-PDF conversion, preserving the exact template. This requires LibreOffice.
+    binary=shutil.which('libreoffice') or shutil.which('soffice')
+    if not binary:
+        raise RuntimeError('PDF conversion requires LibreOffice. Download the Word report or deploy with LibreOffice support.')
+    with tempfile.TemporaryDirectory() as tmp:
+        input_path=Path(tmp)/'investor_report.docx'
+        input_path.write_bytes(make_docx(row,p,cn))
+        proc=subprocess.run([binary,'-env:UserInstallation=file://'+tmp+'/lo_profile','--headless','--convert-to','pdf','--outdir',tmp,str(input_path)],capture_output=True,text=True,timeout=90)
+        pdf=Path(tmp)/'investor_report.pdf'
+        if proc.returncode or not pdf.exists(): raise RuntimeError(f'Word-to-PDF conversion failed: {proc.stderr}')
+        return pdf.read_bytes()
