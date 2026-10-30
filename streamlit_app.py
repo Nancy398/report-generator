@@ -84,6 +84,28 @@ def store_local(rec):
 def local_records():
     with local_db() as c:return [json.loads(r[0]) for r in c.execute('SELECT payload FROM statements')]
 
+
+st.subheader("Google Sheets Connection Test")
+
+try:
+    gc = get_gc_client()
+
+    # 通过文件名打开
+    spreadsheet = gc.open("Reports")
+
+    st.success("✅ Google Sheets 连接成功！")
+    st.write("Spreadsheet:", spreadsheet.title)
+
+    # 查看所有工作表
+    sheet_names = [ws.title for ws in spreadsheet.worksheets()]
+    st.write("Available Sheets:", sheet_names)
+
+except Exception as e:
+    st.error(f"❌ 连接失败: {type(e).__name__}: {repr(e)}")
+
+
+
+
 with st.sidebar:
     st.header('数据来源')
     source=st.radio('Master 数据', ['Google Sheets（Reports）','上传 Excel（本机测试）'])
