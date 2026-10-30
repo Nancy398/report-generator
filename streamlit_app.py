@@ -11,6 +11,13 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 
+import streamlit as st
+
+st.set_page_config(page_title="Moo Housing", layout="wide")
+
+st.title("Moo Housing Investor Report Generator")
+st.success("Application loaded successfully!")
+
 BLUE='203D57'; MUTED='66798A'
 def num(v):
     try: return float(v or 0)
