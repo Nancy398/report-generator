@@ -157,7 +157,7 @@ with st.form('monthly'):
     st.caption('银行余额请从银行核对；不填写则仅提供根据 NOI 推算的现金余额，不能用于正式分红。')
     bank_known=st.checkbox('我已核对本月期末银行余额',value=str(previous.get('Verified Ending Bank Balance','')).strip()!='')
     bank=st.number_input('Verified Ending Bank Balance',value=float(number(previous.get('Verified Ending Bank Balance'))),format='%.2f',disabled=not bank_known)
-    notes=st.text_area('1. Summary — 自己填写（留空则使用自动生成的简短摘要）',value=str(previous.get('Notes','')),height=180,help='此内容将原样写入报告 Summary，不会与自动摘要拼接。支持多段文字。')
+    notes=st.text_area('Executive Summary (manual)',value=str(previous.get('Notes','')))
     status=st.selectbox('保存状态',['Draft','Confirmed'],index=0)
     submit=st.form_submit_button('计算 / Preview')
 
@@ -199,10 +199,16 @@ languages=['中文','English'] if lang in ('both','bilingual','中英文') else 
 for language in languages:
     cn=language=='中文';stem=f"Moo_{selected}_{month}_{'CN' if cn else 'EN'}"
     try:
-        d=make_docx(r,p,cn);pdf=make_pdf(r,p,cn)
+        d=make_docx(r,p,cn)
+        try:
+            pdf=make_pdf(r,p,cn)
+        except Exception as pdf_error:
+            pdf=None
+            st.info(f'Word report ready. PDF unavailable: {pdf_error}')
         left,right=st.columns(2)
         left.download_button(f'{language} · Download Word',d,stem+'.docx',mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',key='doc'+language)
-        right.download_button(f'{language} · Download PDF',pdf,stem+'.pdf',mime='application/pdf',key='pdf'+language)
+        if pdf is not None:
+            right.download_button(f'{language} · Download PDF',pdf,stem+'.pdf',mime='application/pdf',key='pdf'+language)
     except Exception as e:st.error(f'{language} 报告生成失败：{e}')
 st.subheader('5 · 历史月度记录')
 if rows:st.dataframe(pd.DataFrame([x for x in rows if x['Property ID']==selected]).sort_values('Month (YYYY-MM)'),hide_index=True,use_container_width=True)
