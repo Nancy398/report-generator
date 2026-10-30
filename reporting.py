@@ -116,7 +116,7 @@ def _change(current,prior,kind):
     if kind=='money':return f'{a-b:+,.2f}' if a-b<0 else f'+${a-b:,.2f}' if a-b>0 else '$0.00'
     return f'{a-b:+,.0f}'
 
-def make_docx(row,p,cn=False,previous=None):
+def make_docx(row, p, cn=False, previous=None, appendix_documents=None):
     if not MASTER.exists(): raise FileNotFoundError('1438_template.docx must be beside reporting.py')
     doc=Document(MASTER)
     originals=[deepcopy(e) for e in doc.element.body]
