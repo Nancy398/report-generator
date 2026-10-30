@@ -117,6 +117,8 @@ def _change(current,prior,kind):
     return f'{a-b:+,.0f}'
 
 def make_docx(row, p, cn=False, previous=None, appendix_documents=None):
+    if appendix_documents is None:
+        appendix_documents = []
     if not MASTER.exists(): raise FileNotFoundError('1438_template.docx must be beside reporting.py')
     doc=Document(MASTER)
     originals=[deepcopy(e) for e in doc.element.body]
