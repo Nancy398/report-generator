@@ -175,9 +175,24 @@ def make_docx(row, p, cn=False, previous=None, appendix_documents=None):
           ('CASH & RESERVES',['ITEM','AMOUNT'],[('Ending Cash Balance',cash),('Required Reserve',reserve),('Reserve Shortfall',shortfall)])]),
       ('04  DISTRIBUTION DETAILS','Distributions are subject to management approval, cash verification and unpaid obligations.',[
           ('DISTRIBUTION OVERVIEW',['CASH POSITION','USD'],[('Ending Cash Balance',cash),('Less: Required Reserve',reserve),('Available for Distribution Review',available),('Distribution Paid This Period',distribution)])]),
-      ('APPENDIX','Supporting data and financial statements may be attached separately.',[
-          ('SOURCE & RECONCILIATION',['ITEM','DETAILS'],[('Property',prop),('Reporting Period',period),('Verified Ending Bank Balance',_cash(_get(row,'Verified Ending Bank Balance'))),('Property Tax Paid',_cash(_get(row,'Property Tax Paid'))),('Insurance Paid',_cash(_get(row,'Insurance Paid'))),('Other Cash Adjustments',_cash(_get(row,'Other Cash Adjustments')))])])
-    ]
+      ('05  APPENDIX',
+         'The following supporting financial documents are attached '
+         'for reference and form part of this Investor Financial Report.',
+         [
+             (
+                 'SUPPORTING DOCUMENTS',
+                 ['DOCUMENT', 'DESCRIPTION'],
+                 [
+                     (
+                         f'Appendix {chr(65 + i)}',
+                         str(name)
+                     )
+                     for i, (name, payload) in enumerate(appendix_documents)
+                 ] or [
+                     ('No attachments', 'No supporting documents uploaded')
+                 ]
+             )
+         ])
     for idx,(heading,body,blocks) in enumerate(sections):
         if idx: doc.add_page_break()
         # The original page-top banner is a body paragraph with embedded logo; clone exactly.
