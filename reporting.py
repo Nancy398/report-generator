@@ -10,6 +10,8 @@ from datetime import datetime
 from docx import Document
 from docx.text.paragraph import Paragraph
 from docx.table import Table
+from docx.oxml import OxmlElement
+from docx.shared import Inches
 
 MASTER = Path(__file__).with_name('1438_template.docx')
 
@@ -57,6 +59,24 @@ def _clone_table(doc, source_element, headings, data, total_last=False):
     while len(table.rows)>1:
         table._tbl.remove(table.rows[-1]._tr)
     template_row=deepcopy(source_element.findall('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tr')[1])
+    # Extend the original 1438 two-column table to four columns when needed.
+    if len(headings) > len(table._tbl.tblGrid.gridCol_lst):
+        extra=len(headings)-len(table._tbl.tblGrid.gridCol_lst)
+        grid=table._tbl.tblGrid
+        for _ in range(extra):
+            grid.append(deepcopy(grid[-1]))
+        for tr in (table.rows[0]._tr, template_row):
+            cells=tr.findall('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tc')
+            for _ in range(extra):tr.append(deepcopy(cells[-1]))
+        # Original table is two columns; split width evenly across four.
+        for gridcol in grid:
+            width=gridcol.get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}w')
+            if width: gridcol.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}w',str(max(1,int(width)//2)))
+        for tr in (table.rows[0]._tr,template_row):
+            for tc in tr.findall('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tc'):
+                tcw=tc.find('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tcW')
+                if tcw is not None and tcw.get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}w'):
+                    tcw.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}w','2300')
     for item in data:
         table._tbl.append(deepcopy(template_row))
     for ri, vals in enumerate([headings]+data):
@@ -73,10 +93,30 @@ def _clone_table(doc, source_element, headings, data, total_last=False):
             table._tbl.replace(table.rows[-1]._tr,last)
             for ci,val in enumerate(data[-1]):
                 _replace_para(table.rows[-1].cells[ci].paragraphs[0],val)
+    if len(headings)==4:
+        grid=table._tbl.tblGrid
+        while len(grid.gridCol_lst)<4:
+            grid.append(deepcopy(grid.gridCol_lst[-1]))
+        for gc in grid.gridCol_lst:
+            gc.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}w','2300')
     return table
 
 
-def make_docx(row,p,cn=False):
+def _number(value):
+    try:return float(str(value).replace(',','').replace('$','').replace('%','').strip())
+    except (ValueError,TypeError):return None
+
+def _change(current,prior,kind):
+    a,b=_number(current),_number(prior)
+    if a is None or b is None:return 'N/A'
+    if kind=='percent':
+        a=a*100 if a<=1 else a
+        b=b*100 if b<=1 else b
+        return f'{a-b:+.1f} pp'
+    if kind=='money':return f'{a-b:+,.2f}' if a-b<0 else f'+${a-b:,.2f}' if a-b>0 else '$0.00'
+    return f'{a-b:+,.0f}'
+
+def make_docx(row,p,cn=False,previous=None):
     if not MASTER.exists(): raise FileNotFoundError('1438_template.docx must be beside reporting.py')
     doc=Document(MASTER)
     originals=[deepcopy(e) for e in doc.element.body]
@@ -107,12 +147,27 @@ def make_docx(row,p,cn=False):
     shortfall=_cash(_get(row,'Reserve Shortfall'))
     available=_cash(_get(row,'Available to Distribute'))
     distribution=_cash(_get(row,'Distribution Paid'))
+    previous=previous or {}
+    prior_occupied=_get(previous,'Occupied Rooms',default='')
+    prior_total=_get(previous,'Total Rooms',default='')
+    try:prior_vacant=str(int(float(prior_total))-int(float(prior_occupied)))
+    except (ValueError,TypeError):prior_vacant='N/A'
+    def comp(label,key,kind,cur_display=None,prior_display=None):
+        now=_get(row,key,default='')
+        old=_get(previous,key,default='')
+        formatter=_pct if kind=='percent' else _cash if kind=='money' else lambda x:str(x) if str(x).strip() else 'N/A'
+        return (label,prior_display or (formatter(old) if str(old).strip() else 'N/A'),cur_display or (formatter(now) if str(now).strip() else 'N/A'),_change(now,old,kind))
+    comparison=[comp('Occupancy Rate','Occupancy','percent'),
+                comp('Occupied Rooms','Occupied Rooms','count'),
+                ('Vacant Rooms',prior_vacant,vacant,_change(vacant,prior_vacant,'count')),
+                comp('Total Rooms','Total Rooms','count'),
+                comp('Rent Collected','Rent Collected','money'),
+                comp('Outstanding AR','Outstanding AR','money')]
     sections=[
       ('01  EXECUTIVE SUMMARY',summary,[('KEY FINANCIAL HIGHLIGHTS',['FINANCIAL METRIC','AMOUNT'],[
           ('Occupancy Rate',occupancy),('Total Income',income),('Net Operating Income (NOI)',noi),('Available for Distribution Review',available)])]),
       ('02  OCCUPANCY & RENT COLLECTION','Occupancy and collection results for the reporting month.',[
-          ('OCCUPANCY & COLLECTION',['METRIC','CURRENT MONTH'],[
-            ('Occupancy Rate',occupancy),('Occupied Rooms',str(occupied)),('Vacant Rooms',vacant),('Total Rooms',str(total)),('Rent Collected',rent),('Outstanding Balance',ar)])]),
+          ('OCCUPANCY & COLLECTION',['METRIC','PREVIOUS MONTH','CURRENT MONTH','CHANGE'],comparison)]),
       ('03  FINANCIAL SUMMARY','Operating results shown below are based on the supplied financial records.',[
           ('OPERATING RESULTS',['ITEM','AMOUNT'],[('Total Income',income),('Operating Expenses',expenses),('Net Operating Income (NOI)',noi)]),
           ('CASH & RESERVES',['ITEM','AMOUNT'],[('Ending Cash Balance',cash),('Required Reserve',reserve),('Reserve Shortfall',shortfall)])]),
@@ -143,15 +198,36 @@ def make_docx(row,p,cn=False):
     output=io.BytesIO();doc.save(output);return output.getvalue()
 
 
-def make_pdf(row,p,cn=False):
+def make_pdf(row,p,cn=False,previous=None):
     # Use Word-to-PDF conversion, preserving the exact template. This requires LibreOffice.
     binary=shutil.which('libreoffice') or shutil.which('soffice')
     if not binary:
         raise RuntimeError('PDF conversion requires LibreOffice. Download the Word report or deploy with LibreOffice support.')
     with tempfile.TemporaryDirectory() as tmp:
         input_path=Path(tmp)/'investor_report.docx'
-        input_path.write_bytes(make_docx(row,p,cn))
+        input_path.write_bytes(make_docx(row,p,cn,previous=previous))
         proc=subprocess.run([binary,'-env:UserInstallation=file://'+tmp+'/lo_profile','--headless','--convert-to','pdf','--outdir',tmp,str(input_path)],capture_output=True,text=True,timeout=90)
         pdf=Path(tmp)/'investor_report.pdf'
         if proc.returncode or not pdf.exists(): raise RuntimeError(f'Word-to-PDF conversion failed: {proc.stderr}')
         return pdf.read_bytes()
+
+
+def append_pdf_documents(report_pdf, attachments):
+    """Append original PDF pages in upload order, without rasterizing or changing them."""
+    from pypdf import PdfReader, PdfWriter
+    writer = PdfWriter()
+    writer.append(io.BytesIO(report_pdf))
+    for name, payload in attachments:
+        try:
+            reader = PdfReader(io.BytesIO(payload), strict=False)
+            if reader.is_encrypted:
+                raise ValueError('PDF is password-protected')
+            if len(reader.pages) == 0:
+                raise ValueError('PDF has no pages')
+            writer.append(reader)
+        except Exception as exc:
+            raise ValueError(f'Appendix PDF {name}: {exc}') from exc
+    result = io.BytesIO()
+    writer.write(result)
+    writer.close()
+    return result.getvalue()
