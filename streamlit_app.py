@@ -22,7 +22,7 @@ def local_db():
 def excel_load(blob):
     x=pd.ExcelFile(io.BytesIO(blob));return {name:pd.read_excel(x,sheet_name=name,dtype=object).fillna('') for name in x.sheet_names if name in SHEETS}
 
-GS_SPREADSHEET_NAME = "Reports"
+GS_SPREADSHEET_ID = "1vESBpLsjZEO67UCDnTuZgU0GlOes4jSZLzi9QGIhNLY"
 
 def get_gc_client():
     """沿用现有支票系统的 Streamlit Secrets / Service Account 授权。"""
@@ -39,7 +39,7 @@ def get_gc_client():
     return gspread.authorize(credentials)
 
 def book_open():
-    return get_gc_client().open(GS_SPREADSHEET_NAME)
+    return get_gc_client().open_by_key(GS_SPREADSHEET_ID)
 
 def google_load():
     book = book_open()
@@ -91,7 +91,7 @@ try:
     gc = get_gc_client()
 
     # 通过文件名打开
-    spreadsheet = gc.open("Reports")
+    spreadsheet = gc.open_by_key(GS_SPREADSHEET_ID)
 
     st.success("✅ Google Sheets 连接成功！")
     st.write("Spreadsheet:", spreadsheet.title)
