@@ -113,12 +113,12 @@ def _change(current,prior,kind):
         a=a*100 if a<=1 else a
         b=b*100 if b<=1 else b
         return f'{a-b:+.1f} pp'
-    if kind=='money':return f'{a-b:+,.2f}' if a-b<0 else f'+${a-b:,.2f}' if a-b>0 else '$0.00'
+    if kind=='money':
+        delta = a-b
+        return f'-${abs(delta):,.2f}' if delta < 0 else f'+${delta:,.2f}' if delta > 0 else '$0.00'
     return f'{a-b:+,.0f}'
 
-def make_docx(row, p, cn=False, previous=None, appendix_documents=None):
-    if appendix_documents is None:
-        appendix_documents = []
+def make_docx(row,p,cn=False,previous=None,appendix_documents=None):
     if not MASTER.exists(): raise FileNotFoundError('1438_template.docx must be beside reporting.py')
     doc=Document(MASTER)
     originals=[deepcopy(e) for e in doc.element.body]
@@ -165,6 +165,21 @@ def make_docx(row, p, cn=False, previous=None, appendix_documents=None):
                 comp('Total Rooms','Total Rooms','count'),
                 comp('Rent Collected','Rent Collected','money'),
                 comp('Outstanding AR','Outstanding AR','money')]
+    appendix_documents = appendix_documents or []
+    appendix_items = []
+    for i, entry in enumerate(appendix_documents):
+        if isinstance(entry, (tuple, list)) and len(entry) >= 2:
+            label, detail = entry[:2]
+            # The Streamlit app passes (report title, reporting period).
+            # A (filename, PDF bytes) pair is also supported for the list.
+            if isinstance(detail, (bytes, bytearray)):
+                description = str(label)
+            else:
+                description = str(label) + (f' — {detail}' if detail else '')
+        else:
+            description = str(entry)
+        appendix_items.append((f'Appendix {chr(65+i)}', description))
+    appendix_intro = ('The following original AppFolio reports are attached after this report for reference. ' + 'They provide supporting details for the financial and occupancy information presented above.') if appendix_items else 'No supporting PDF documents were uploaded for this report.'
     sections=[
       ('01  EXECUTIVE SUMMARY',summary,[('KEY FINANCIAL HIGHLIGHTS',['FINANCIAL METRIC','AMOUNT'],[
           ('Occupancy Rate',occupancy),('Total Income',income),('Net Operating Income (NOI)',noi),('Available for Distribution Review',available)])]),
@@ -175,24 +190,9 @@ def make_docx(row, p, cn=False, previous=None, appendix_documents=None):
           ('CASH & RESERVES',['ITEM','AMOUNT'],[('Ending Cash Balance',cash),('Required Reserve',reserve),('Reserve Shortfall',shortfall)])]),
       ('04  DISTRIBUTION DETAILS','Distributions are subject to management approval, cash verification and unpaid obligations.',[
           ('DISTRIBUTION OVERVIEW',['CASH POSITION','USD'],[('Ending Cash Balance',cash),('Less: Required Reserve',reserve),('Available for Distribution Review',available),('Distribution Paid This Period',distribution)])]),
-      ('05  APPENDIX',
-         'The following supporting financial documents are attached '
-         'for reference and form part of this Investor Financial Report.',
-         [
-             (
-                 'SUPPORTING DOCUMENTS',
-                 ['DOCUMENT', 'DESCRIPTION'],
-                 [
-                     (
-                         f'Appendix {chr(65 + i)}',
-                         str(name)
-                     )
-                     for i, (name, payload) in enumerate(appendix_documents)
-                 ] or [
-                     ('No attachments', 'No supporting documents uploaded')
-                 ]
-             )
-         ])
+      ('05  APPENDIX',appendix_intro,([('SUPPORTING DOCUMENTS',['DOCUMENT','DESCRIPTION'],appendix_items)] if appendix_items else []) + [
+          ('SOURCE & RECONCILIATION',['ITEM','DETAILS'],[('Property',prop),('Reporting Period',period),('Verified Ending Bank Balance',_cash(_get(row,'Verified Ending Bank Balance'))),('Property Tax Paid',_cash(_get(row,'Property Tax Paid'))),('Insurance Paid',_cash(_get(row,'Insurance Paid'))),('Other Cash Adjustments',_cash(_get(row,'Other Cash Adjustments')))])])
+    ]
     for idx,(heading,body,blocks) in enumerate(sections):
         if idx: doc.add_page_break()
         # The original page-top banner is a body paragraph with embedded logo; clone exactly.
@@ -215,61 +215,19 @@ def make_docx(row, p, cn=False, previous=None, appendix_documents=None):
     output=io.BytesIO();doc.save(output);return output.getvalue()
 
 
-def make_pdf(row, p, cn=False, previous=None, appendix_documents=None):
-    # Convert Word to PDF and attach the original AppFolio PDFs.
-    binary = shutil.which("libreoffice") or shutil.which("soffice")
-
+def make_pdf(row,p,cn=False,previous=None,appendix_documents=None):
+    # Convert the Word body only. streamlit_app.py separately appends the
+    # uploaded PDFs via append_pdf_documents(), avoiding duplicate pages.
+    binary=shutil.which('libreoffice') or shutil.which('soffice')
     if not binary:
-        raise RuntimeError("PDF conversion requires LibreOffice.")
-
-    if appendix_documents is None:
-        appendix_documents = []
-
+        raise RuntimeError('PDF conversion requires LibreOffice. Download the Word report or deploy with LibreOffice support.')
     with tempfile.TemporaryDirectory() as tmp:
-        input_path = Path(tmp) / "investor_report.docx"
-
-        input_path.write_bytes(
-            make_docx(
-                row,
-                p,
-                cn=cn,
-                previous=previous,
-                appendix_documents=appendix_documents
-            )
-        )
-
-        proc = subprocess.run(
-            [
-                binary,
-                "-env:UserInstallation=file://" + tmp + "/lo_profile",
-                "--headless",
-                "--convert-to",
-                "pdf",
-                "--outdir",
-                tmp,
-                str(input_path)
-            ],
-            capture_output=True,
-            text=True,
-            timeout=90
-        )
-
-        pdf_path = Path(tmp) / "investor_report.pdf"
-
-        if proc.returncode != 0 or not pdf_path.exists():
-            raise RuntimeError(
-                f"Word-to-PDF conversion failed: {proc.stderr}"
-            )
-
-        report_pdf = pdf_path.read_bytes()
-
-        if appendix_documents:
-            report_pdf = append_pdf_documents(
-                report_pdf,
-                appendix_documents
-            )
-
-        return report_pdf
+        input_path=Path(tmp)/'investor_report.docx'
+        input_path.write_bytes(make_docx(row,p,cn,previous=previous,appendix_documents=appendix_documents))
+        proc=subprocess.run([binary,'-env:UserInstallation=file://'+tmp+'/lo_profile','--headless','--convert-to','pdf','--outdir',tmp,str(input_path)],capture_output=True,text=True,timeout=90)
+        pdf=Path(tmp)/'investor_report.pdf'
+        if proc.returncode or not pdf.exists(): raise RuntimeError(f'Word-to-PDF conversion failed: {proc.stderr}')
+        return pdf.read_bytes()
 
 
 def append_pdf_documents(report_pdf, attachments):
