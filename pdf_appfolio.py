@@ -24,12 +24,12 @@ def _tokens(ws,xmin=0):
     return ' '.join(w[4] for w in ws if w[0]>=xmin)
 
 def _amounts(ws):
-    return [float(w[4].replace(',','').replace('$','').replace('(','-').replace(')','')) for w in ws if w[0]>420 and AMOUNT.fullmatch(w[4])]
+    return [float(w[4].replace(',','').replace('$','').replace('(','-').replace(')','')) for w in ws if w[0]>350 and AMOUNT.fullmatch(w[4])]
 
 def parse_income_pdf(data):
     lines=_lines(data); found={};period=None
     for page,y,ws in lines:
-        text=_tokens(ws);label=_tokens([w for w in ws if w[0]<430]).strip().lower()
+        text=_tokens(ws);label=_tokens([w for w in ws if w[0]<350]).strip().lower()
         if 'period range:' in text.lower():
             m=re.search(r'Period Range:\s*([A-Za-z]{3}\s+\d{4})\s+to\s+([A-Za-z]{3}\s+\d{4})',text,re.I)
             if m:
