@@ -9,6 +9,8 @@ from reporting import make_docx,make_pdf,append_pdf_documents
 from chinese_appendix import translate_income, translate_rent_roll
 from pdf_appfolio import parse_income_pdf,parse_rent_roll_pdf
 
+st.set_page_config(page_title="Moo Housing", layout="wide")
+st.write("APP STARTED")
 st.set_page_config(page_title='Moo Housing | Investor Report Generator',layout='wide')
 st.title('MOO HOUSING · Investor Report Generator')
 st.caption('AppFolio PDF → NOI / Occupancy → Cash & Reserve → Word / PDF with original PDF appendices')
