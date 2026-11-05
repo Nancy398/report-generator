@@ -135,6 +135,9 @@ for label,record in [('Income Statement',financial),('Rent Roll',occupancy)]:
         st.error(f'{label} 的报表月份为 {record["period"]}，当前选择 {month}。请修改 Reporting Month，否则不能保存或生成正式报告。')
 period_mismatch=any(x and x.get('period') and x['period']!=month for x in (financial,occupancy))
 if financial:
+    for field, title in [('rent_income','Rent Income'),('utility_income','Utility Income')]:
+        if field not in financial:
+            st.warning(f'{title} 未从 PDF 识别到；请核对并在下方手动填写。')
     st.write('AppFolio 识别结果',{'Rent Income':financial.get('rent_income'),'Utility Income (Total FEES)':financial.get('utility_income'),'Other Income':financial.get('other_income'),'Total Income':financial.get('income'),'Expenses':financial.get('expenses'),'NOI':financial.get('noi')})
     if all(financial.get(x) is not None for x in ['income','expenses','noi']) and abs(financial['income']-financial['expenses']-financial['noi'])>.05:
         st.warning('Income - Expenses 与 NOI 不一致。请确认报表符号和费用分类。')
