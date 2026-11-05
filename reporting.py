@@ -174,6 +174,30 @@ def _polish_chinese(doc):
                             _set_font(run, western='Cambria', east_asia='Microsoft YaHei', size=10)
 
 
+def _apply_sans_typography(doc):
+    """Apply a consistent sans-serif family without disturbing template geometry/logo."""
+    for paragraph in list(doc.paragraphs) + [p for sec in doc.sections for p in sec.header.paragraphs]:
+        for run in paragraph.runs:
+            if not run.text: continue
+            _set_font(run, western='Arial', east_asia='Noto Sans CJK SC')
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    for run in paragraph.runs:
+                        if run.text:
+                            _set_font(run, western='Arial', east_asia='Noto Sans CJK SC')
+    for style in doc.styles:
+        if style.type == 1:
+            style.font.name = 'Arial'
+            rpr = style.element.get_or_add_rPr()
+            fonts = rpr.rFonts
+            if fonts is None:
+                fonts = OxmlElement('w:rFonts')
+                rpr.insert(0, fonts)
+            fonts.set(qn('w:eastAsia'), 'Noto Sans CJK SC')
+
+
 def make_docx(row,p,cn=False,previous=None,appendix_documents=None):
     if not MASTER.exists(): raise FileNotFoundError('1438_template.docx must be beside reporting.py')
     doc=Document(MASTER)
@@ -326,6 +350,7 @@ def make_docx(row,p,cn=False,previous=None,appendix_documents=None):
             for run in paragraph.runs:
                 if run.text:
                     _set_font(run, east_asia='Microsoft YaHei', size=17 if index == 2 else (12 if index == 4 else 10.5), bold=(index in (2, 4)))
+    _apply_sans_typography(doc)
     output=io.BytesIO();doc.save(output);return output.getvalue()
 
 
