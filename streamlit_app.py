@@ -198,12 +198,29 @@ st.caption(f"Beginning Cash ${r['Beginning Cash']:,.2f} + NOI ${r['NOI']:,.2f} �
 st.caption('Ending Cash 为系统推算余额；Required Reserve 为上月累计预留 + 本月固定预留 − 本月实际支付的 Property Tax 和 Insurance。')
 if r['Reserve Shortfall']>0:st.error('存在 Reserve Shortfall，建议暂停分红。')
 if status=='Confirmed' and (not income_file or not rent_file):st.warning('Confirmed 状态要求上传两份 AppFolio 报表。')
+# Save both source inputs and calculated columns, using the existing Reports sheet headings.
+save_rec = dict(rec)
+save_rec.update({
+    'Beginning Cash': r['Beginning Cash'],
+    'Modeled Ending Cash': r['Modeled Ending Cash'],
+    'Ending Cash': r['Ending Cash'],
+    'Tax Reserve Required': r['Tax Reserve Required'],
+    'Insurance Reserve Required': r['Insurance Reserve Required'],
+    'Total Required Reserve': r['Required Reserve'],
+    'Required Reserve': r['Required Reserve'],
+    'Reserve Shortfall': r['Reserve Shortfall'],
+    'Available to Distribute': r['Available to Distribute'],
+    'Monthly Reserve Addition': r['Monthly Reserve Addition'],
+})
 if st.button('💾 Save to Google Sheets' if source.startswith('Google') else '💾 Save locally (Excel 模式)',disabled=period_mismatch):
     if status=='Confirmed' and (not income_file or not rent_file):st.error('Confirmed 必须提供两份 AppFolio 报表。')
     else:
         try:
-            if source.startswith('Google'):store_google(rec);st.success('已保存到 Google Sheets。请点击侧栏刷新读取。')
-            else:store_local(rec);st.success('已保存到本机 SQLite 数据库。Excel 文件本身未被修改；切换电脑不会自动同步。')
+            if source.startswith('Google'):
+                store_google(save_rec)
+                st.session_state['google_data']=google_load()
+                st.success('已保存计算结果到 Google Sheets，并刷新数据。')
+            else:store_local(save_rec);st.success('已保存计算结果到本机 SQLite 数据库。Excel 文件本身未被修改；切换电脑不会自动同步。')
         except Exception as e:st.error(f'保存失败：{e}')
 
 st.subheader('4 · Investor Report 下载')
