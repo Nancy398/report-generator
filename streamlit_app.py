@@ -170,7 +170,7 @@ with st.form('monthly'):
 rec={'Property ID':p.get('Property ID'),'Month (YYYY-MM)':month,'Income':inc,'Expenses':exp,'NOI':noi,
      'Property Tax Paid':tax,'Insurance Paid':ins,'Calculation Version':'modeled-v2',
      'Other Cash Expense':other,'Other Cash Adjustments':adjustments,'Distribution Paid':dist,
-     'Verified Ending Bank Balance':bank if bank_known else '', 'Notes':notes,'Status':status,
+     'Notes':notes,'Status':status,
      'Occupancy':occupancy['occupancy'] if occupancy else previous.get('Occupancy',''),
      'Occupied Rooms':occupancy['occupied'] if occupancy else previous.get('Occupied Rooms',''),
      'Total Rooms':occupancy['rooms'] if occupancy else previous.get('Total Rooms','')}
