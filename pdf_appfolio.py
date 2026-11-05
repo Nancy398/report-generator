@@ -47,6 +47,29 @@ def parse_income_pdf(data):
             found[key]=nums[0]
     if len(found)<3:raise ValueError('Missing Total Operating Income, Total Operating Expense or NOI in PDF.')
     if abs(found['income']-found['expenses']-found['noi'])>.05:raise ValueError('Income / Expenses / NOI reconciliation failed.')
+    # Management reporting convention: all FEES are grouped as Utility Income.
+    # Keep the original AppFolio total income / NOI unchanged.
+    fees = None
+    rents = None
+    for page, y, ws in lines:
+        label = _tokens([w for w in ws if w[0] < 350]).strip().lower()
+        if label in ('total fees', 'total rents'):
+            nums = _amounts(ws)
+            if not nums:
+                nums = [a for pg, yy, ww in lines if pg == page and abs(yy-y) <= 4 for a in _amounts(ww)]
+            if nums:
+                if label == 'total fees': fees = nums[0]
+                else: rents = nums[0]
+    # Report convention agreed with management: Rent Income is the remaining
+    # operating income after grouping all FEES as Utility Income. This may
+    # include concessions and other non-FEES rent adjustments.
+    if fees is not None:
+        found['utility_income'] = round(fees, 2)
+        found['rent_income'] = round(found['income'] - fees, 2)
+    elif rents is not None:
+        # Without a FEES subtotal, do not guess the missing split.
+        found['rent_income'] = round(rents, 2)
+        found['other_income'] = round(found['income'] - rents, 2)
     found['period']=period
     return found
 
