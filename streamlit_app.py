@@ -157,20 +157,18 @@ with st.form('monthly'):
     with c2:
         tax=st.number_input('Property Tax Paid from Reserve',value=float(number(previous.get('Property Tax Paid'))),min_value=0.,format='%.2f')
         ins=st.number_input('Insurance Paid from Reserve',value=float(number(previous.get('Insurance Paid'))),min_value=0.,format='%.2f')
-        tax_in_noi=st.checkbox('Tax / Insurance 已经包含在 NOI 费用里',value=str(previous.get('Tax/Insurance Included in NOI?','Yes')).lower()!='no')
+        st.caption('Tax / Insurance Paid 按独立现金支付扣除；请确保 NOI 未重复扣除相同支出。')
     with c3:
         other=st.number_input('Other Cash Expenses NOT in NOI',value=float(number(previous.get('Other Cash Expense'))),min_value=0.,format='%.2f')
         adjustments=st.number_input('Other Cash Adjustments (+/-)',value=float(number(previous.get('Other Cash Adjustments'))),format='%.2f')
         dist=st.number_input('Distribution Paid (本月已支付)',value=float(number(previous.get('Distribution Paid'))),min_value=0.,format='%.2f')
-    st.caption('银行余额请从银行核对；不填写则仅提供根据 NOI 推算的现金余额，不能用于正式分红。')
-    bank_known=st.checkbox('我已核对本月期末银行余额',value=str(previous.get('Verified Ending Bank Balance','')).strip()!='')
-    bank=st.number_input('Verified Ending Bank Balance',value=float(number(previous.get('Verified Ending Bank Balance'))),format='%.2f',disabled=not bank_known)
+    st.caption('Ending Cash 自动按上月余额 + NOI − Tax − Insurance − 其他支出 − 分红 + 调整计算，不需要核对银行余额。')
     notes=st.text_area('Executive Summary (manual)',value=str(previous.get('Notes','')))
     status=st.selectbox('保存状态',['Draft','Confirmed'],index=0)
     submit=st.form_submit_button('计算 / Preview')
 
 rec={'Property ID':p.get('Property ID'),'Month (YYYY-MM)':month,'Income':inc,'Expenses':exp,'NOI':noi,
-     'Property Tax Paid':tax,'Insurance Paid':ins,'Tax/Insurance Included in NOI?':'Yes' if tax_in_noi else 'No',
+     'Property Tax Paid':tax,'Insurance Paid':ins,'Calculation Version':'modeled-v2',
      'Other Cash Expense':other,'Other Cash Adjustments':adjustments,'Distribution Paid':dist,
      'Verified Ending Bank Balance':bank if bank_known else '', 'Notes':notes,'Status':status,
      'Occupancy':occupancy['occupancy'] if occupancy else previous.get('Occupancy',''),
@@ -194,13 +192,14 @@ if prior_row is None:
     prior_row=next((x for x in combined if pid(x.get('Property ID'))==selected and period(x.get('Month (YYYY-MM)'))==prior_month),None)
 st.subheader('3 · 自动计算结果')
 x,y,z,w=st.columns(4)
-x.metric('NOI',f"${r['NOI']:,.2f}");y.metric('Ending Cash',f"${r['Ending Cash']:,.2f}");z.metric('Required Reserve',f"${r['Required Reserve']:,.2f}");w.metric('Shortfall' if r['Reserve Shortfall']>0 else 'Available Distribution',f"${max(r['Reserve Shortfall'],r['Available to Distribute']):,.2f}")
+x.metric('NOI',f"${r['NOI']:,.2f}");y.metric('Modeled Ending Cash',f"${r['Ending Cash']:,.2f}");z.metric('Cumulative Required Reserve',f"${r['Required Reserve']:,.2f}");w.metric('Shortfall' if r['Reserve Shortfall']>0 else 'Available Distribution',f"${max(r['Reserve Shortfall'],r['Available to Distribute']):,.2f}")
 st.dataframe(pd.DataFrame([r]),hide_index=True,use_container_width=True)
-if not bank_known:st.warning('银行余额尚未核对。Ending Cash 是根据 NOI 推算的金额，不能视为已确认可分红现金。')
+st.caption(f"Beginning Cash ${r['Beginning Cash']:,.2f} + NOI ${r['NOI']:,.2f} − Tax ${tax:,.2f} − Insurance ${ins:,.2f} − Other ${other:,.2f} − Distribution ${dist:,.2f} + Adjustments ${adjustments:,.2f} = Modeled Ending Cash ${r['Modeled Ending Cash']:,.2f}")
+st.caption('Ending Cash 为系统推算余额；Required Reserve 为上月累计预留 + 本月固定预留 − 本月实际支付的 Property Tax 和 Insurance。')
 if r['Reserve Shortfall']>0:st.error('存在 Reserve Shortfall，建议暂停分红。')
-if status=='Confirmed' and (not bank_known or not income_file or not rent_file):st.warning('确认状态要求上传两份 AppFolio 报表并核对银行余额。')
+if status=='Confirmed' and (not income_file or not rent_file):st.warning('Confirmed 状态要求上传两份 AppFolio 报表。')
 if st.button('💾 Save to Google Sheets' if source.startswith('Google') else '💾 Save locally (Excel 模式)',disabled=period_mismatch):
-    if status=='Confirmed' and (not bank_known or not income_file or not rent_file):st.error('Confirmed 必须提供两份 AppFolio 报表和核对银行余额。')
+    if status=='Confirmed' and (not income_file or not rent_file):st.error('Confirmed 必须提供两份 AppFolio 报表。')
     else:
         try:
             if source.startswith('Google'):store_google(rec);st.success('已保存到 Google Sheets。请点击侧栏刷新读取。')
@@ -243,4 +242,4 @@ for language in languages:
     except Exception as e:st.error(f'{language} 报告生成失败：{e}')
 st.subheader('5 · 历史月度记录')
 if rows:st.dataframe(pd.DataFrame([x for x in rows if x['Property ID']==selected]).sort_values('Month (YYYY-MM)'),hide_index=True,use_container_width=True)
-st.caption('内部管理工具。系统不自动付款、不自动发送邮件；确认分红前请核对银行余额、应付款项和实际分红流水。')
+st.caption('内部管理工具。系统不自动付款、不自动发送邮件；现金余额为推算值，确认分红前仍需审核应付款项和实际分红流水。')
