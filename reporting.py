@@ -198,6 +198,13 @@ def make_docx(row,p,cn=False,previous=None,appendix_documents=None):
     rent=_cash(_get(row,'Rent Collected','Rent Collection','Collected Rent'))
     ar=_cash(_get(row,'Outstanding AR','Accounts Receivable','AR'))
     income=_cash(_get(row,'Income','Total Income'))
+    rent_income=_cash(_get(row,'Rent Income'))
+    utility_income=_cash(_get(row,'Utility Income'))
+    other_income=_get(row,'Other Income',default=None)
+    income_breakdown=[('Rent Income',rent_income),('Utility Income',utility_income)]
+    if other_income is not None and abs(float(other_income or 0))>0.005:
+        income_breakdown.append(('Other Income',_cash(other_income)))
+    income_breakdown.append(('Total Income',income))
     expenses=_cash(_get(row,'Expenses','Operating Expenses'))
     noi=_cash(_get(row,'NOI'))
     cash=_cash(_get(row,'Ending Cash'))
@@ -230,7 +237,7 @@ def make_docx(row,p,cn=False,previous=None,appendix_documents=None):
       ('02  OCCUPANCY & RENT COLLECTION','Occupancy and collection results for the reporting month.',[
           ('OCCUPANCY & COLLECTION',['METRIC','PREVIOUS MONTH','CURRENT MONTH','CHANGE'],comparison)]),
       ('03  FINANCIAL SUMMARY','Operating results shown below are based on the supplied financial records.',[
-          ('OPERATING RESULTS',['ITEM','AMOUNT'],[('Total Income',income),('Operating Expenses',expenses),('Net Operating Income (NOI)',noi)]),
+          ('OPERATING RESULTS',['ITEM','AMOUNT'],income_breakdown+[('Operating Expenses',expenses),('Net Operating Income (NOI)',noi)]),
           ('CASH & RESERVES',['ITEM','AMOUNT'],[('Ending Cash Balance',cash),('Required Reserve',reserve),('Reserve Shortfall',shortfall)])]),
       ('04  DISTRIBUTION DETAILS','Distributions are subject to management approval, cash verification and unpaid obligations.',[
           ('DISTRIBUTION OVERVIEW',['CASH POSITION','USD'],[('Ending Cash Balance',cash),('Less: Required Reserve',reserve),('Available for Distribution Review',available),('Distribution Paid This Period',distribution)])]),
@@ -268,7 +275,7 @@ def make_docx(row,p,cn=False,previous=None,appendix_documents=None):
             'SUPPORTING DOCUMENTS':'附属报表','DOCUMENT':'文件','DESCRIPTION':'说明',
             'Occupancy Rate':'入住率','Occupied Rooms':'已入住房间','Vacant Rooms':'空置房间',
             'Total Rooms':'总房间数','Rent Collected':'实收租金','Outstanding AR':'未收应收款',
-            'Total Income':'总收入','Operating Expenses':'营业费用','Net Operating Income (NOI)':'净营业收入（NOI）',
+            'Rent Income':'租金收入','Utility Income':'水电及其他服务收入','Other Income':'其他收入','Total Income':'总收入','Operating Expenses':'营业费用','Net Operating Income (NOI)':'净营业收入（NOI）',
             'Available for Distribution Review':'待审核可分配金额','Ending Cash Balance':'期末现金余额',
             'Required Reserve':'要求保留资金','Reserve Shortfall':'预留资金缺口',
             'Less: Required Reserve':'减：要求保留资金','Distribution Paid This Period':'本期已分红',
