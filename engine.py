@@ -125,6 +125,8 @@ def calculate(properties, statements):
     for k, p in pmap.items():
         cash = number(p.get('Opening Cash'))
         reserve = number(p.get('Opening Required Reserve'))
+        tax_reserve = number(p.get('Opening Tax Reserve'), reserve)
+        insurance_reserve = number(p.get('Opening Insurance Reserve'), 0)
         monthly_tax = number(p.get('Monthly Tax Reserve'))
         monthly_ins = number(p.get('Monthly Insurance Reserve'))
         months = sorted(m for x, m in grouped if x == k)
@@ -143,7 +145,9 @@ def calculate(properties, statements):
             dist = number(r.get('Distribution Paid'))
             adj = number(r.get('Other Cash Adjustments'))
             modeled = begin + noi - tax - ins - other - dist + adj
-            new_reserve = reserve + monthly_tax + monthly_ins - tax - ins
+            new_tax_reserve = tax_reserve + monthly_tax - tax
+            new_insurance_reserve = insurance_reserve + monthly_ins - ins
+            new_reserve = new_tax_reserve + new_insurance_reserve
             # Preserve the first imported historical closing snapshot as the
             # starting point for subsequent months, rather than discarding it.
             legacy_snapshot = (last is None and str(r.get('Calculation Version', '')).strip() == ''
@@ -152,10 +156,20 @@ def calculate(properties, statements):
             if legacy_snapshot:
                 cash = number(r.get('Ending Cash'))
                 reserve = number(r.get('Total Required Reserve'))
+                tax_reserve = number(r.get('Tax Reserve Required'), None)
+                insurance_reserve = number(r.get('Insurance Reserve Required'), None)
+                if tax_reserve is None and insurance_reserve is None:
+                    tax_reserve, insurance_reserve = reserve, 0.0
+                elif tax_reserve is None:
+                    tax_reserve = reserve - insurance_reserve
+                elif insurance_reserve is None:
+                    insurance_reserve = reserve - tax_reserve
                 issues.append(f'{k} {m}: 使用已有历史期末余额作为起始基准；以后月份自动滚动计算')
             else:
                 cash = modeled
                 reserve = new_reserve
+                tax_reserve = new_tax_reserve
+                insurance_reserve = new_insurance_reserve
             if cash < 0:
                 issues.append(f'{k} {m}: Ending Cash 为负数')
             available = max(0, cash - reserve)
@@ -175,6 +189,9 @@ def calculate(properties, statements):
                 'Monthly Tax Reserve': round(monthly_tax, 2),
                 'Monthly Insurance Reserve': round(monthly_ins, 2),
                 'Monthly Reserve Addition': round(monthly_tax + monthly_ins, 2),
+                'Tax Reserve Required': round(tax_reserve, 2),
+                'Insurance Reserve Required': round(insurance_reserve, 2),
+                'Total Required Reserve': round(reserve, 2),
                 'Required Reserve': round(reserve, 2),
                 'Reserve Shortfall': round(shortfall, 2),
                 'Available to Distribute': round(available, 2),
