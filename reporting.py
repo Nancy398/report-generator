@@ -201,6 +201,8 @@ def make_docx(row,p,cn=False,previous=None,appendix_documents=None):
     rent_income=_cash(_get(row,'Rent Income'))
     utility_income=_cash(_get(row,'Utility Income'))
     other_income=_get(row,'Other Income',default=None)
+    if rent_income == 'Not provided' or utility_income == 'Not provided':
+        raise ValueError('Income Breakdown missing in report row. Re-upload the Income Statement and check Rent Income / Utility Income before generating.')
     income_breakdown=[('Rent Income',rent_income),('Utility Income',utility_income)]
     if other_income is not None and abs(float(other_income or 0))>0.005:
         income_breakdown.append(('Other Income',_cash(other_income)))
