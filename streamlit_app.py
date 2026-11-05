@@ -135,7 +135,7 @@ for label,record in [('Income Statement',financial),('Rent Roll',occupancy)]:
         st.error(f'{label} 的报表月份为 {record["period"]}，当前选择 {month}。请修改 Reporting Month，否则不能保存或生成正式报告。')
 period_mismatch=any(x and x.get('period') and x['period']!=month for x in (financial,occupancy))
 if financial:
-    st.write('AppFolio 识别结果',{'Income':financial.get('income'),'Expenses':financial.get('expenses'),'NOI':financial.get('noi')})
+    st.write('AppFolio 识别结果',{'Rent Income':financial.get('rent_income'),'Utility Income (Total FEES)':financial.get('utility_income'),'Other Income':financial.get('other_income'),'Total Income':financial.get('income'),'Expenses':financial.get('expenses'),'NOI':financial.get('noi')})
     if all(financial.get(x) is not None for x in ['income','expenses','noi']) and abs(financial['income']-financial['expenses']-financial['noi'])>.05:
         st.warning('Income - Expenses 与 NOI 不一致。请确认报表符号和费用分类。')
 if occupancy:
@@ -154,6 +154,9 @@ with st.form('monthly'):
         inc=st.number_input('Total Income',value=float(number(financial.get('income') if financial else previous.get('Income'))),step=100.,format='%.2f')
         exp=st.number_input('Operating Expenses',value=float(number(financial.get('expenses') if financial else previous.get('Expenses'))),step=100.,format='%.2f')
         noi=st.number_input('NOI',value=float(number(financial.get('noi') if financial else previous.get('NOI'))),step=100.,format='%.2f')
+        rent_income=st.number_input('Rent Income',value=float(number(financial.get('rent_income') if financial else previous.get('Rent Income'))),format='%.2f')
+        utility_income=st.number_input('Utility Income (AppFolio Total FEES)',value=float(number(financial.get('utility_income') if financial else previous.get('Utility Income'))),format='%.2f')
+        other_income=st.number_input('Other Income',value=float(number(financial.get('other_income') if financial else previous.get('Other Income'))),format='%.2f')
     with c2:
         tax=st.number_input('Property Tax Paid from Reserve',value=float(number(previous.get('Property Tax Paid'))),min_value=0.,format='%.2f')
         ins=st.number_input('Insurance Paid from Reserve',value=float(number(previous.get('Insurance Paid'))),min_value=0.,format='%.2f')
@@ -167,13 +170,15 @@ with st.form('monthly'):
     status=st.selectbox('保存状态',['Draft','Confirmed'],index=0)
     submit=st.form_submit_button('计算 / Preview')
 
-rec={'Property ID':p.get('Property ID'),'Month (YYYY-MM)':month,'Income':inc,'Expenses':exp,'NOI':noi,
+rec={'Property ID':p.get('Property ID'),'Month (YYYY-MM)':month,'Rent Income':rent_income,'Utility Income':utility_income,'Other Income':other_income,'Income':inc,'Expenses':exp,'NOI':noi,
      'Property Tax Paid':tax,'Insurance Paid':ins,'Calculation Version':'modeled-v2',
      'Other Cash Expense':other,'Other Cash Adjustments':adjustments,'Distribution Paid':dist,
      'Notes':notes,'Status':status,
      'Occupancy':occupancy['occupancy'] if occupancy else previous.get('Occupancy',''),
      'Occupied Rooms':occupancy['occupied'] if occupancy else previous.get('Occupied Rooms',''),
      'Total Rooms':occupancy['rooms'] if occupancy else previous.get('Total Rooms','')}
+if abs((rent_income+utility_income+other_income)-inc)>.05:
+    st.warning('Income Breakdown 与 Total Income 不一致，请核对 Rent / FEES / Other Income；Total Income 和 NOI 不会自动改变。')
 combined=[r for r in sheet_monthly if not(pid(r.get('Property ID'))==selected and period(r.get('Month (YYYY-MM)'))==month)]
 if source.startswith('上传'):
     local=local_records();combined=[r for r in combined if not any(pid(r.get('Property ID'))==pid(x.get('Property ID')) and period(r.get('Month (YYYY-MM)'))==period(x.get('Month (YYYY-MM)')) for x in local)]+[x for x in local if not(pid(x.get('Property ID'))==selected and x.get('Month (YYYY-MM)')==month)]
