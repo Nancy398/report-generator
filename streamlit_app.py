@@ -191,6 +191,14 @@ for issue in issues:st.warning(issue)
 match=[r for r in rows if r['Property ID']==selected and r['Month (YYYY-MM)']==month]
 if not match:st.stop()
 r=match[0]
+# Preserve the current unsaved manual summary in both Word and PDF output.
+r = dict(r)
+r['Notes'] = notes
+r['Summary'] = notes
+# Use the current form's income breakdown for report generation, even when
+# a historical calculated row or cached Google Sheets row has missing fields.
+for _field in ('Rent Income', 'Utility Income', 'Other Income'):
+    r[_field] = rec[_field]
 from datetime import date
 report_year,report_month=map(int,month.split('-'))
 prior_month=f'{report_year-1:04d}-12' if report_month==1 else f'{report_year:04d}-{report_month-1:02d}'
@@ -232,6 +240,7 @@ if st.button('💾 Save to Google Sheets' if source.startswith('Google') else '�
         except Exception as e:st.error(f'保存失败：{e}')
 
 st.subheader('4 · Investor Report 下载')
+st.caption('报告收入拆分：Rent Income ${:,.2f} · Utility Income ${:,.2f} · Other Income ${:,.2f}'.format(r['Rent Income'],r['Utility Income'],r['Other Income']))
 if not income_file or not rent_file:st.info('未同时上传两份 AppFolio PDF 报表，以下报告为待核对草稿。')
 if period_mismatch:st.error('报表月份不一致：请先修改 Reporting Month，下载功能已停用。')
 lang=str(p.get('Report Language','English')).strip().lower()
