@@ -268,7 +268,7 @@ def make_docx(row,p,cn=False,previous=None,appendix_documents=None):
       ('04  DISTRIBUTION DETAILS','Distributions are subject to management approval, cash verification and unpaid obligations.',[
           ('DISTRIBUTION OVERVIEW',['CASH POSITION','USD'],[('Ending Cash Balance',cash),('Less: Required Reserve',reserve),('Available for Distribution Review',available),('Distribution Paid This Period',distribution)])]),
       ('05  APPENDIX',appendix_intro,([('SUPPORTING DOCUMENTS',['DOCUMENT','DESCRIPTION'],appendix_items)] if appendix_items else []) + [
-          ('SOURCE & RECONCILIATION',['ITEM','DETAILS'],[('Property',prop),('Reporting Period',period),('Verified Ending Bank Balance',_cash(_get(row,'Verified Ending Bank Balance'))),('Property Tax Paid',_cash(_get(row,'Property Tax Paid'))),('Insurance Paid',_cash(_get(row,'Insurance Paid'))),('Other Cash Adjustments',_cash(_get(row,'Other Cash Adjustments')))])])
+          ('SOURCE & RECONCILIATION',['ITEM','DETAILS'],[('Property',prop),('Reporting Period',period),('Property Tax Paid',_cash(_get(row,'Property Tax Paid'))),('Insurance Paid',_cash(_get(row,'Insurance Paid'))),('Other Cash Adjustments',_cash(_get(row,'Other Cash Adjustments')))])])
     ]
     for idx,(heading,body,blocks) in enumerate(sections):
         if idx: doc.add_page_break()
@@ -305,7 +305,7 @@ def make_docx(row,p,cn=False,previous=None,appendix_documents=None):
             'Available for Distribution Review':'待审核可分配金额','Ending Cash Balance':'期末现金余额',
             'Required Reserve':'要求保留资金','Reserve Shortfall':'预留资金缺口',
             'Less: Required Reserve':'减：要求保留资金','Distribution Paid This Period':'本期已分红',
-            'Property':'物业','Reporting Period':'报告月份','Verified Ending Bank Balance':'已核实银行期末余额',
+            'Property':'物业','Reporting Period':'报告月份',
             'Property Tax Paid':'已付房产税','Insurance Paid':'已付保险费','Other Cash Adjustments':'其他现金调整',
             'AppFolio Income Statement':'AppFolio 物业经营利润表',
             'AppFolio Rent Roll':'AppFolio 物业出租及入住情况表',
