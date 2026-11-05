@@ -47,29 +47,32 @@ def parse_income_pdf(data):
             found[key]=nums[0]
     if len(found)<3:raise ValueError('Missing Total Operating Income, Total Operating Expense or NOI in PDF.')
     if abs(found['income']-found['expenses']-found['noi'])>.05:raise ValueError('Income / Expenses / NOI reconciliation failed.')
-    # Management reporting convention: all FEES are grouped as Utility Income.
-    # Keep the original AppFolio total income / NOI unchanged.
-    fees = None
-    rents = None
+    # Account-based breakdown. Never infer Rent Income as Total Income - FEES.
+    amounts_by_label = {}
     for page, y, ws in lines:
         label = _tokens([w for w in ws if w[0] < 350]).strip().lower()
-        if label in ('total fees', 'total rents'):
+        if label in ('rent income', 'parking income', 'concessions', 'total rents', 'total fees'):
             nums = _amounts(ws)
             if not nums:
                 nums = [a for pg, yy, ww in lines if pg == page and abs(yy-y) <= 4 for a in _amounts(ww)]
             if nums:
-                if label == 'total fees': fees = nums[0]
-                else: rents = nums[0]
-    # Report convention agreed with management: Rent Income is the remaining
-    # operating income after grouping all FEES as Utility Income. This may
-    # include concessions and other non-FEES rent adjustments.
-    if fees is not None:
-        found['utility_income'] = round(fees, 2)
-        found['rent_income'] = round(found['income'] - fees, 2)
-    elif rents is not None:
-        # Without a FEES subtotal, do not guess the missing split.
-        found['rent_income'] = round(rents, 2)
-        found['other_income'] = round(found['income'] - rents, 2)
+                amounts_by_label[label] = nums[0]
+    components = ('rent income', 'parking income', 'concessions')
+    if 'rent income' in amounts_by_label:
+        found['rent_income'] = round(sum(amounts_by_label.get(k, 0) for k in components), 2)
+        found['rent_components'] = {k: amounts_by_label.get(k, 0) for k in components}
+    elif 'total rents' in amounts_by_label:
+        found['rent_income'] = round(amounts_by_label['total rents'], 2)
+    if 'total fees' in amounts_by_label:
+        found['utility_income'] = round(amounts_by_label['total fees'], 2)
+    if 'rent_income' in found and 'utility_income' in found:
+        found['other_income'] = round(found['income'] - found['rent_income'] - found['utility_income'], 2)
+    elif 'rent_income' in found and abs(found['income'] - found['rent_income']) < 0.05:
+        found['utility_income'] = 0.0
+        found['other_income'] = 0.0
+    elif 'utility_income' in found and abs(found['income'] - found['utility_income']) < 0.05:
+        found['rent_income'] = 0.0
+        found['other_income'] = 0.0
     found['period']=period
     return found
 
