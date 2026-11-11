@@ -245,6 +245,7 @@ r=match[0]
 r = dict(r)
 r['Notes'] = notes
 r['Summary'] = notes
+r['Outstanding Rent Receivable'] = rec['Outstanding Rent Receivable']
 # Match the separate Summaries tab by Property ID, property name, or address + month.
 def _match_property(value):
     def norm(x):return re.sub(r'[^a-z0-9]','',str(x or '').lower())
@@ -254,6 +255,7 @@ summary_record=next((s for s in summaries if _match_property(s.get('Property')) 
 r['Summary CN']=str(summary_record.get('Summary CN','') or '').strip()
 r['Summary EN']=str(summary_record.get('Summary EN','') or '').strip()
 r['Distribution Frequency']=str(p.get('Distribution Frequency','Monthly') or 'Monthly').strip()
+
 
 # Use the current form's income breakdown for report generation, even when
 # a historical calculated row or cached Google Sheets row has missing fields.
