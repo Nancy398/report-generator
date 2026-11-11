@@ -8,13 +8,12 @@ from engine import number,pid,period,read_appfolio,parse_income,parse_rent_roll,
 from reporting import make_docx,make_pdf,append_pdf_documents
 from chinese_appendix import translate_income, translate_rent_roll
 from pdf_appfolio import parse_income_pdf,parse_rent_roll_pdf
-from investor_communication import show_communications
 
 st.set_page_config(page_title='Moo Housing | Investor Report Generator',layout='wide')
 st.title('MOO HOUSING · Investor Report Generator')
 st.caption('AppFolio PDF → NOI / Occupancy → Cash & Reserve → Word / PDF with original PDF appendices')
 HERE=Path(__file__).parent
-SHEETS=['Properties','Monthly Statements','Investors','Distribution History','Summaries']
+SHEETS=['Properties','Monthly Statements','Investors','Distribution History','Summaries','LLCs','LLC Monthly']
 DB=Path('/tmp')/'moo_local_records.sqlite3'
 
 def local_db():
@@ -76,6 +75,8 @@ def store_google(rec):
     if existing:
         old=vals[existing-1];oldstatus=old[heads.index('Status')] if 'Status' in heads and len(old)>heads.index('Status') else ''
         if str(oldstatus).lower()=='confirmed':raise ValueError('该月份已经 Confirmed，不能直接覆盖。请先在 Google Sheets 中审核并改为 Draft。')
+        # Preserve existing columns that are not part of this submission.
+        new=[rec[h] if h in rec else (old[j] if j<len(old) else '') for j,h in enumerate(heads)]
         ws.update(range_name=f'A{existing}',values=[new])
     else:ws.append_row(new,value_input_option='USER_ENTERED')
 
@@ -114,42 +115,29 @@ pmap={pid(p.get('Property ID')):p for p in props if pid(p.get('Property ID'))}
 if not pmap:st.stop()
 report_type=st.radio('Report Type',['Single Property Report','Combined LLC Report'],horizontal=True)
 if report_type=='Combined LLC Report':
-    from combined_llc import build_model,make_combined_docx,make_combined_pdf,generated_summary
+    from combined_llc import build_model,make_combined_docx,make_combined_pdf
     from reporting import append_pdf_documents
     groups={}
     for prop in props:
-        group=str(prop.get('Property Name / LLC','') or '').strip()
-        if group and pid(prop.get('Property ID')):
-            key=re.sub(r'[^a-z0-9]','',group.lower())
-            if key not in groups:groups[key]={'name':group,'members':[]}
-            groups[key]['members'].append(prop)
-    options=[key for key,entry in groups.items() if len({pid(x.get('Property ID')) for x in entry['members']})>=2]
+        group=str(prop.get('Report Group','') or '').strip()
+        if group:groups.setdefault(group,[]).append(prop)
+    options=[g for g,members in groups.items() if len(members)>=2]
     if not options:
-        st.error('Properties 中没有发现两个或以上 Property ID 对应相同 Property Name / LLC 的公司。')
+        st.error('请在 Properties 中新增 Report Group，并为同一 LLC 的两个或以上物业填写相同组名。')
         st.stop()
-    group_key=st.selectbox('LLC',options,format_func=lambda key:groups[key]['name'])
-    group=groups[group_key]['name']
+    group=st.selectbox('LLC / Report Group',options)
     month_combined=st.text_input('Reporting Month (YYYY-MM)',value=datetime.now().strftime('%Y-%m'),key='combined_month')
-    st.caption('Included properties: '+', '.join(str(p.get('Property Address') or p.get('Property ID')) for p in groups[group_key]['members']))
-    st.info('先在 Single Property Report 分别保存各物业当月数据。合并报告会相加各物业 Ending Cash、Required Reserve、Distribution Paid；请确保各物业现金记录不重复包含同一银行账户余额。')
+    st.caption('Included properties: '+', '.join(str(p.get('Property Address') or p.get('Property ID')) for p in groups[group]))
+    st.info('先在 Single Property Report 分别保存每个物业当月 AppFolio 运营数据；LLC 现金、Reserve 和 Distribution 仅在 LLC Monthly 工作表填写一次。')
+    if 'LLC Monthly' not in data or 'LLCs' not in data:
+        st.error('Google Sheets 需要增加 LLCs 和 LLC Monthly 两个工作表；具体表头见 ZIP 中的 README。')
+        st.stop()
     try:
-        model=build_model(group,month_combined,props,sheet_monthly,summaries)
+        model=build_model(group,month_combined,props,sheet_monthly,records(data.get('LLC Monthly')),summaries,records(data.get('LLCs')))
     except Exception as e:
         st.error(f'无法生成合并报告：{e}')
         st.stop()
     st.subheader('Combined Executive Summary')
-    preview_lang=st.radio('Summary Preview Language',['中文','English'],horizontal=True,key='llc_summary_preview_lang')
-    preview_cn=preview_lang=='中文'
-    operating_text,cash_text=generated_summary(model,preview_cn)
-    st.markdown('**经营表现**' if preview_cn else '**OPERATING PERFORMANCE**')
-    st.text(operating_text)
-    st.markdown('**LLC 现金及分红**' if preview_cn else '**LLC CASH & DISTRIBUTIONS**')
-    st.write(cash_text)
-    manual_note=model['summary_cn' if preview_cn else 'summary_en'].strip()
-    if manual_note:
-        st.markdown('**其他经营事项**' if preview_cn else '**OTHER OPERATING NOTES**')
-        st.write(manual_note)
-
     st.dataframe(pd.DataFrame(model['properties'])[['name','occupancy','prior_occupancy','noi','rent','income','expenses']],hide_index=True,use_container_width=True)
     c1,c2,c3=st.columns(3)
     c1.metric('LLC Available Cash',f"${model['available']:,.2f}")
@@ -171,10 +159,6 @@ if report_type=='Combined LLC Report':
                 col2.download_button(f'{language} · Download Combined PDF',pdf,stem+'.pdf',mime='application/pdf',key='llc_pdf'+language)
             except Exception as e:st.info(f'{language} PDF 暂不可用：{e}')
         except Exception as e:st.error(f'{language} Word 生成失败：{e}')
-    op_cn, cash_cn = generated_summary(model, True)
-    op_en, cash_en = generated_summary(model, False)
-    show_communications(group, month_combined, op_cn, cash_cn, model.get('summary_cn',''),
-                        op_en, cash_en, model.get('summary_en',''), key='llc_'+group_key)
     st.stop()
 selected=st.selectbox('Property',list(pmap),format_func=lambda k:f"{pmap[k].get('Property Name / LLC',k)} ({k})")
 p=pmap[selected]
@@ -229,6 +213,7 @@ with st.form('monthly'):
         tax=st.number_input('Property Tax Paid from Reserve',value=float(number(previous.get('Property Tax Paid'))),min_value=0.,format='%.2f')
         ins=st.number_input('Insurance Paid from Reserve',value=float(number(previous.get('Insurance Paid'))),min_value=0.,format='%.2f')
         st.caption('Tax / Insurance Paid 按独立现金支付扣除；请确保 NOI 未重复扣除相同支出。')
+        outstanding_ar=st.number_input('Outstanding Rent Receivable (月末未收租金)',value=float(number(previous.get('Outstanding Rent Receivable'))),min_value=0.,format='%.2f',help='月末尚未收回的租金余额，仅用于第02节对比，不影响 NOI / Cash / Reserve。')
     with c3:
         other=st.number_input('Other Cash Expenses NOT in NOI',value=float(number(previous.get('Other Cash Expense'))),min_value=0.,format='%.2f')
         adjustments=st.number_input('Other Cash Adjustments (+/-)',value=float(number(previous.get('Other Cash Adjustments'))),format='%.2f')
@@ -241,7 +226,7 @@ with st.form('monthly'):
 rec={'Property ID':p.get('Property ID'),'Month (YYYY-MM)':month,'Rent Income':rent_income,'Utility Income':utility_income,'Other Income':other_income,'Income':inc,'Expenses':exp,'NOI':noi,
      'Property Tax Paid':tax,'Insurance Paid':ins,'Calculation Version':'modeled-v2',
      'Other Cash Expense':other,'Other Cash Adjustments':adjustments,'Distribution Paid':dist,
-     'Notes':notes,'Status':status,
+     'Notes':notes,'Status':status,'Outstanding Rent Receivable':outstanding_ar,
      'Occupancy':occupancy['occupancy'] if occupancy else previous.get('Occupancy',''),
      'Occupied Rooms':occupancy['occupied'] if occupancy else previous.get('Occupied Rooms',''),
      'Total Rooms':occupancy['rooms'] if occupancy else previous.get('Total Rooms','')}
@@ -272,7 +257,7 @@ r['Distribution Frequency']=str(p.get('Distribution Frequency','Monthly') or 'Mo
 
 # Use the current form's income breakdown for report generation, even when
 # a historical calculated row or cached Google Sheets row has missing fields.
-for _field in ('Rent Income', 'Utility Income', 'Other Income'):
+for _field in ('Rent Income', 'Utility Income', 'Other Income', 'Outstanding Rent Receivable'):
     r[_field] = rec[_field]
 from datetime import date
 report_year,report_month=map(int,month.split('-'))
@@ -281,57 +266,12 @@ prior_row=next((x for x in rows if pid(x.get('Property ID'))==selected and perio
 # If no calculated historical row exists, use saved source data (never fabricate).
 if prior_row is None:
     prior_row=next((x for x in combined if pid(x.get('Property ID'))==selected and period(x.get('Month (YYYY-MM)'))==prior_month),None)
-# Single Property Executive Summary preview uses the same financial inputs as the Word report.
-def _summary_number(value):
-    try:
-        if value is None or str(value).strip() == '':
-            return None
-        return float(str(value).replace(',', '').replace('$', '').replace('%', ''))
-    except (TypeError, ValueError):
-        return None
-
-def _single_summary_preview(row, previous_row, chinese):
-    fmt=lambda n: f'${n:,.2f}'
-    current=_summary_number(row.get('Occupancy'))
-    previous_occ=_summary_number((previous_row or {}).get('Occupancy'))
-    pct=lambda v: v*100 if v is not None and v<=1 else v
-    if current is None:
-        occ='本月入住率数据尚未提供。' if chinese else 'Current-month occupancy data is unavailable.'
-    elif previous_occ is None:
-        occ=(f'本月入住率为 {pct(current):.1f}%；暂无上月可比数据。' if chinese else f'Occupancy was {pct(current):.1f}% this month; prior-month data is unavailable.')
-    else:
-        delta=pct(current)-pct(previous_occ)
-        if chinese:
-            occ=f'本月入住率为 {pct(current):.1f}%，上月为 {pct(previous_occ):.1f}%，' + (f'环比上升 {delta:.1f} 个百分点。' if delta>0.005 else f'环比下降 {abs(delta):.1f} 个百分点。' if delta< -0.005 else '环比持平。')
-        else:
-            occ=f'Occupancy was {pct(current):.1f}% versus {pct(previous_occ):.1f}% last month; ' + (f'it increased by {delta:.1f} percentage points.' if delta>0.005 else f'it decreased by {abs(delta):.1f} percentage points.' if delta< -0.005 else 'it remained unchanged.')
-    noi_value=_summary_number(row.get('NOI'))
-    noi_text=(f'本月净营业收入（NOI）为 {fmt(noi_value)}。' if chinese else f'Net Operating Income (NOI) for the month was {fmt(noi_value)}.') if noi_value is not None else ('本月 NOI 数据尚未提供。' if chinese else 'NOI data for this month is unavailable.')
-    available=_summary_number(row.get('Available to Distribute'))
-    paid=_summary_number(row.get('Distribution Paid'))
-    quarterly=str(row.get('Distribution Frequency','Monthly')).strip().lower() in ('quarterly','quarter','季度','季度分红')
-    if available is None:
-        cash='可分配现金余额尚未提供。' if chinese else 'Available cash for distribution is unavailable.'
-    elif quarterly:
-        cash=(f'截至本月末，累计可分配现金为 {fmt(available)}。' if chinese else f'Cumulative available cash for distribution at month-end was {fmt(available)}.')
-        cash+=('该余额将结转至下一季度分红评估。' if chinese else ' This balance will carry forward to the next quarterly distribution review.')
-    else:
-        cash=(f'本月期末可分配现金余额为 {fmt(available)}。' if chinese else f'Available cash for distribution at month-end was {fmt(available)}.')
-    note=str(row.get('Summary CN' if chinese else 'Summary EN','') or '').strip() or str(row.get('Summary','') or '').strip()
-    return occ+' '+noi_text,cash,note
-
-st.subheader('Executive Summary · 自动经营摘要')
-preview_language=st.radio('Summary Preview Language',['中文','English'],horizontal=True,key='single_summary_preview_language')
-preview_chinese=preview_language=='中文'
-operation_summary,distribution_summary,manual_summary=_single_summary_preview(r,prior_row,preview_chinese)
-st.markdown('**经营表现**' if preview_chinese else '**OPERATING PERFORMANCE**')
-st.write(operation_summary)
-st.markdown('**现金及分红情况**' if preview_chinese else '**CASH & DISTRIBUTIONS**')
-st.write(distribution_summary)
-if manual_summary:
-    st.markdown('**其他经营事项**' if preview_chinese else '**OTHER OPERATING NOTES**')
-    st.write(manual_summary)
-
+# Historical calculated rows may omit receivables / income detail; enrich from saved sheet.
+prior_saved=next((x for x in combined if pid(x.get('Property ID'))==selected and period(x.get('Month (YYYY-MM)'))==prior_month),{})
+prior_row={**prior_saved, **(prior_row or {})}
+for _field in ('Rent Income', 'Outstanding Rent Receivable'):
+    if prior_row.get(_field) in (None, '') and prior_saved.get(_field) not in (None, ''):
+        prior_row[_field]=prior_saved[_field]
 st.subheader('3 · 自动计算结果')
 x,y,z,w=st.columns(4)
 x.metric('NOI',f"${r['NOI']:,.2f}");y.metric('Modeled Ending Cash',f"${r['Ending Cash']:,.2f}");z.metric('Cumulative Required Reserve',f"${r['Required Reserve']:,.2f}");w.metric('Shortfall' if r['Reserve Shortfall']>0 else 'Available Distribution',f"${max(r['Reserve Shortfall'],r['Available to Distribute']):,.2f}")
@@ -366,7 +306,7 @@ if st.button('💾 Save to Google Sheets' if source.startswith('Google') else '�
         except Exception as e:st.error(f'保存失败：{e}')
 
 st.subheader('4 · Investor Report 下载')
-st.caption('自动经营摘要：入住率环比 + 可分配现金/季度累计；额外备注读取 Summaries（Property、Month、Summary CN、Summary EN）。Properties 可新增 Distribution Frequency 列，填写 Monthly 或 Quarterly。')
+st.caption('自动经营摘要：入住率环比 + NOI + 可分配现金/季度累计；额外备注读取 Summaries（Property、Month、Summary CN、Summary EN）。Properties 可新增 Distribution Frequency 列，填写 Monthly 或 Quarterly。')
 st.caption('报告收入拆分：Rent Income ${:,.2f} · Utility Income ${:,.2f} · Other Income ${:,.2f}'.format(r['Rent Income'],r['Utility Income'],r['Other Income']))
 if not income_file or not rent_file:st.info('未同时上传两份 AppFolio PDF 报表，以下报告为待核对草稿。')
 if period_mismatch:st.error('报表月份不一致：请先修改 Reporting Month，下载功能已停用。')
@@ -401,12 +341,6 @@ for language in languages:
         if pdf is not None:
             right.download_button(f"{language} · Download PDF + Appendix",pdf,stem+".pdf",mime="application/pdf",key="pdf"+language)
     except Exception as e:st.error(f'{language} 报告生成失败：{e}')
-op_cn, cash_cn, note_cn = _single_summary_preview(r, prior_row, True)
-op_en, cash_en, note_en = _single_summary_preview(r, prior_row, False)
-show_communications(str(p.get('Property Name / LLC') or selected), month,
-                    op_cn, cash_cn, note_cn, op_en, cash_en, note_en,
-                    key='single_'+re.sub(r'[^a-zA-Z0-9]', '_', selected))
-
 st.subheader('5 · 历史月度记录')
 if rows:st.dataframe(pd.DataFrame([x for x in rows if x['Property ID']==selected]).sort_values('Month (YYYY-MM)'),hide_index=True,use_container_width=True)
 st.caption('内部管理工具。系统不自动付款、不自动发送邮件；现金余额为推算值，确认分红前仍需审核应付款项和实际分红流水。')
