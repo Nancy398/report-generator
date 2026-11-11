@@ -309,14 +309,9 @@ def _single_summary_preview(row, previous_row, chinese):
         cash='可分配现金余额尚未提供。' if chinese else 'Available cash for distribution is unavailable.'
     elif quarterly:
         cash=(f'截至本月末，累计可分配现金为 {fmt(available)}。' if chinese else f'Cumulative available cash for distribution at month-end was {fmt(available)}.')
-        if paid is not None and paid>0:
-            cash+=(f'本月实际分红 {fmt(paid)}，上述累计余额为分红后的期末余额。' if chinese else f' Actual distributions this month were {fmt(paid)}; the cumulative balance shown is after those distributions.')
-        else:
-            cash+=('该余额将结转至下一季度分红评估。' if chinese else ' This balance will carry forward to the next quarterly distribution review.')
+        cash+=('该余额将结转至下一季度分红评估。' if chinese else ' This balance will carry forward to the next quarterly distribution review.')
     else:
         cash=(f'本月期末可分配现金余额为 {fmt(available)}。' if chinese else f'Available cash for distribution at month-end was {fmt(available)}.')
-        if paid is not None:
-            cash+=(f'本月实际分红总额为 {fmt(paid)}。' if chinese else f' Actual distributions during the month totaled {fmt(paid)}.')
     note=str(row.get('Summary CN' if chinese else 'Summary EN','') or '').strip() or str(row.get('Summary','') or '').strip()
     return occ+' '+noi_text,cash,note
 
@@ -366,7 +361,7 @@ if st.button('💾 Save to Google Sheets' if source.startswith('Google') else '�
         except Exception as e:st.error(f'保存失败：{e}')
 
 st.subheader('4 · Investor Report 下载')
-st.caption('自动经营摘要：入住率环比 + 可分配现金 + 实际分红/季度累计；额外备注读取 Summaries（Property、Month、Summary CN、Summary EN）。Properties 可新增 Distribution Frequency 列，填写 Monthly 或 Quarterly。')
+st.caption('自动经营摘要：入住率环比 + 可分配现金/季度累计；额外备注读取 Summaries（Property、Month、Summary CN、Summary EN）。Properties 可新增 Distribution Frequency 列，填写 Monthly 或 Quarterly。')
 st.caption('报告收入拆分：Rent Income ${:,.2f} · Utility Income ${:,.2f} · Other Income ${:,.2f}'.format(r['Rent Income'],r['Utility Income'],r['Other Income']))
 if not income_file or not rent_file:st.info('未同时上传两份 AppFolio PDF 报表，以下报告为待核对草稿。')
 if period_mismatch:st.error('报表月份不一致：请先修改 Reporting Month，下载功能已停用。')
