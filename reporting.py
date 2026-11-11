@@ -217,8 +217,49 @@ def make_docx(row,p,cn=False,previous=None,appendix_documents=None):
     total=_get(row,'Total Rooms')
     try: vacant=str(int(float(total))-int(float(occupied)))
     except (ValueError,TypeError): vacant='Not provided'
-    summary=str(_get(row,'Summary','Executive Summary','Notes',default=''))
-    if not summary.strip(): summary='[Enter your Executive Summary in the Streamlit Summary field.]'
+    summary=str(_get(row,'Summary CN' if cn else 'Summary EN',default='') or '').strip()
+    if not summary:
+        summary=str(_get(row,'Summary','Executive Summary','Notes',default='') or '').strip()
+    frequency=str(_get(row,'Distribution Frequency',default=_get(p,'Distribution Frequency',default='Monthly'))).strip().lower()
+    quarterly=frequency in ('quarterly','quarter','季度','季度分红')
+    previous=previous or {}
+    cur_occ=_number(_get(row,'Occupancy',default=''))
+    prev_occ=_number(_get(previous,'Occupancy',default=''))
+    def occ_percent(v): return v*100 if v is not None and v<=1 else v
+    if cur_occ is None:
+        occ_line=('本月入住率数据尚未提供。' if cn else 'Current-month occupancy data is unavailable.')
+    elif prev_occ is None:
+        occ_line=(f'本月入住率为 {occ_percent(cur_occ):.1f}%；暂无上月可比数据。' if cn else f'Occupancy was {occ_percent(cur_occ):.1f}% this month; prior-month data is unavailable.')
+    else:
+        delta=occ_percent(cur_occ)-occ_percent(prev_occ)
+        if cn:
+            direction='上升' if delta>0.005 else '下降' if delta< -0.005 else '持平'
+            occ_line=f'本月入住率为 {occ_percent(cur_occ):.1f}%，上月为 {occ_percent(prev_occ):.1f}%，' + (f'环比{direction} {abs(delta):.1f} 个百分点。' if direction!='持平' else '环比持平。')
+        else:
+            direction='increased' if delta>0.005 else 'decreased' if delta< -0.005 else 'remained unchanged'
+            occ_line=f'Occupancy was {occ_percent(cur_occ):.1f}% versus {occ_percent(prev_occ):.1f}% last month; ' + (f'it {direction} by {abs(delta):.1f} percentage points.' if direction!='remained unchanged' else 'it remained unchanged.')
+    available_num=_number(_get(row,'Available to Distribute',default=''))
+    distribution_num=_number(_get(row,'Distribution Paid',default=''))
+    money=lambda x: '${:,.2f}'.format(x)
+    if available_num is None:
+        cash_line=('可分配现金余额尚未提供。' if cn else 'Available cash for distribution is unavailable.')
+    elif quarterly:
+        cash_line=(f'截至本月末，累计可分配现金为 {money(available_num)}。' if cn else f'Cumulative available cash for distribution at month-end was {money(available_num)}.')
+        if distribution_num is not None and distribution_num>0:
+            cash_line+=(f'本月实际分红 {money(distribution_num)}，上述累计余额为分红后的期末余额。' if cn else f' Actual distributions this month were {money(distribution_num)}; the cumulative balance shown is after those distributions.')
+        else:
+            cash_line+=('该余额将结转至下一季度分红评估。' if cn else ' This balance will carry forward to the next quarterly distribution review.')
+    else:
+        cash_line=(f'本月期末可分配现金余额为 {money(available_num)}。' if cn else f'Available cash for distribution at month-end was {money(available_num)}.')
+        if distribution_num is not None:
+            cash_line+=(f'本月实际分红总额为 {money(distribution_num)}。' if cn else f' Actual distributions during the month totaled {money(distribution_num)}.')
+    noi_num=_number(_get(row,'NOI',default=''))
+    if noi_num is None:
+        noi_line=('本月 NOI 数据尚未提供。' if cn else 'NOI data for this month is unavailable.')
+    else:
+        noi_line=(f'本月净营业收入（NOI）为 {money(noi_num)}。' if cn else f'Net Operating Income (NOI) for the month was {money(noi_num)}.')
+    extra_notes=summary
+
     rent=_cash(_get(row,'Rent Collected','Rent Collection','Collected Rent'))
     ar=_cash(_get(row,'Outstanding AR','Accounts Receivable','AR'))
     income=_cash(_get(row,'Income','Total Income'))
@@ -255,17 +296,17 @@ def make_docx(row,p,cn=False,previous=None,appendix_documents=None):
                 comp('Rent Collected','Rent Collected','money'),
                 comp('Outstanding AR','Outstanding AR','money')]
     appendix_documents = appendix_documents or []
-    appendix_items = [(f'Appendix {chr(65+i)}', label + (f' — {date}' if date else '')) for i,(label,date) in enumerate(appendix_documents)]
+    appendix_items = [(f'Appendix {chr(65+i)}', label.split(' — ')[0].strip() + (f' — {date[:7]}' if date else '')) for i,(label,date) in enumerate(appendix_documents)]
     appendix_intro = ('The following original AppFolio reports are attached after this report for reference. ' + 'They provide supporting details for the financial and occupancy information presented above.') if appendix_items else 'No supporting PDF documents were uploaded for this report.'
     sections=[
-      ('01  EXECUTIVE SUMMARY',summary,[('KEY FINANCIAL HIGHLIGHTS',['FINANCIAL METRIC','AMOUNT'],[
-          ('Occupancy Rate',occupancy),('Total Income',income),('Net Operating Income (NOI)',noi),('Available for Distribution Review',available)])]),
+      ('01  EXECUTIVE SUMMARY','',[('AT A GLANCE',['KEY METRIC','MONTH-END VALUE'],[
+          ('Occupancy Rate',occupancy),('Net Operating Income (NOI)',_cash(_get(row,'NOI'))),('Cumulative Available Cash' if quarterly else 'Available Cash',available)])]),
       ('02  OCCUPANCY & RENT COLLECTION','Occupancy and collection results for the reporting month.',[
           ('OCCUPANCY & COLLECTION',['METRIC','PREVIOUS MONTH','CURRENT MONTH','CHANGE'],comparison)]),
       ('03  FINANCIAL SUMMARY','Operating results shown below are based on the supplied financial records.',[
           ('OPERATING RESULTS',['ITEM','AMOUNT'],income_breakdown+[('Operating Expenses',expenses),('Net Operating Income (NOI)',noi)]),
           ('CASH & RESERVES',['ITEM','AMOUNT'],[('Ending Cash Balance',cash),('Required Reserve',reserve),('Reserve Shortfall',shortfall)])]),
-      ('04  DISTRIBUTION DETAILS','Distributions are subject to management approval, cash verification and unpaid obligations.',[
+      ('04  DISTRIBUTION DETAILS','',[
           ('DISTRIBUTION OVERVIEW',['CASH POSITION','USD'],[('Ending Cash Balance',cash),('Less: Required Reserve',reserve),('Available for Distribution Review',available),('Distribution Paid This Period',distribution)])]),
       ('05  APPENDIX',appendix_intro,([('SUPPORTING DOCUMENTS',['DOCUMENT','DESCRIPTION'],appendix_items)] if appendix_items else []) + [
           ('SOURCE & RECONCILIATION',['ITEM','DETAILS'],[('Property',prop),('Reporting Period',period),('Property Tax Paid',_cash(_get(row,'Property Tax Paid'))),('Insurance Paid',_cash(_get(row,'Insurance Paid'))),('Other Cash Adjustments',_cash(_get(row,'Other Cash Adjustments')))])])
@@ -282,18 +323,32 @@ def make_docx(row,p,cn=False,previous=None,appendix_documents=None):
             title.runs[1].text=parts[1] if len(parts)==2 else heading
             for run in title.runs[2:]: run.text=''
         else: _replace_para(title,heading)
-        _clone_paragraph(doc, originals[14],body)
+        if body:
+            _clone_paragraph(doc, originals[14],body)
         for j,(subtitle,cols,items) in enumerate(blocks):
             _clone_paragraph(doc, originals[16],subtitle)
-            _clone_table(doc,originals[17],cols,items,total_last=(idx in (0,2,3) and j==len(blocks)-1))
+            tbl = _clone_table(doc,originals[17],cols,items,total_last=(idx in (0,2,3) and j==len(blocks)-1))
+            if subtitle == 'SUPPORTING DOCUMENTS':
+                for row_cells in tbl.rows[1:]:
+                    row_cells.cells[1].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.LEFT
             _clone_paragraph(doc, originals[18], '')
+        if idx == 0:
+            for sub, paragraph_text in [
+                ('经营表现' if cn else 'OPERATING PERFORMANCE', occ_line + ' ' + noi_line),
+                ('现金及分红情况' if cn else 'CASH & DISTRIBUTIONS', cash_line),
+            ]:
+                _clone_paragraph(doc, originals[16], sub)
+                _clone_paragraph(doc, originals[14], paragraph_text)
+            if extra_notes:
+                _clone_paragraph(doc, originals[16], '其他经营事项' if cn else 'OTHER OPERATING NOTES')
+                _clone_paragraph(doc, originals[14], extra_notes)
     if cn:
         translations = {
             'Project Overview, Operations & Distribution Summary':'项目概况、经营情况及分红摘要',
             'INVESTOR FINANCIAL REPORT':'投资人财务报告',
             'EXECUTIVE SUMMARY':'经营摘要','OCCUPANCY & RENT COLLECTION':'出租率及租金收取',
             'FINANCIAL SUMMARY':'财务汇总','DISTRIBUTION DETAILS':'分红明细','APPENDIX':'附录',
-            'KEY FINANCIAL HIGHLIGHTS':'主要财务指标','FINANCIAL METRIC':'财务指标',
+            'AT A GLANCE':'关键指标','KEY METRIC':'指标','MONTH-END VALUE':'期末数值','Cumulative Available Cash':'累计可分配现金','Available Cash':'可分配现金','KEY FINANCIAL HIGHLIGHTS':'主要财务指标','FINANCIAL METRIC':'财务指标',
             'AMOUNT':'金额','METRIC':'指标','PREVIOUS MONTH':'上个月','CURRENT MONTH':'本月','CHANGE':'变化',
             'OCCUPANCY & COLLECTION':'出租及收款情况','OPERATING RESULTS':'经营业绩',
             'CASH & RESERVES':'现金及预留资金','DISTRIBUTION OVERVIEW':'分红概览',
