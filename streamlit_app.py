@@ -8,6 +8,7 @@ from engine import number,pid,period,read_appfolio,parse_income,parse_rent_roll,
 from reporting import make_docx,make_pdf,append_pdf_documents
 from chinese_appendix import translate_income, translate_rent_roll
 from pdf_appfolio import parse_income_pdf,parse_rent_roll_pdf
+from investor_communication import show_communications
 
 st.set_page_config(page_title='Moo Housing | Investor Report Generator',layout='wide')
 st.title('MOO HOUSING · Investor Report Generator')
@@ -170,6 +171,10 @@ if report_type=='Combined LLC Report':
                 col2.download_button(f'{language} · Download Combined PDF',pdf,stem+'.pdf',mime='application/pdf',key='llc_pdf'+language)
             except Exception as e:st.info(f'{language} PDF 暂不可用：{e}')
         except Exception as e:st.error(f'{language} Word 生成失败：{e}')
+    op_cn, cash_cn = generated_summary(model, True)
+    op_en, cash_en = generated_summary(model, False)
+    show_communications(group, month_combined, op_cn, cash_cn, model.get('summary_cn',''),
+                        op_en, cash_en, model.get('summary_en',''), key='llc_'+group_key)
     st.stop()
 selected=st.selectbox('Property',list(pmap),format_func=lambda k:f"{pmap[k].get('Property Name / LLC',k)} ({k})")
 p=pmap[selected]
@@ -396,6 +401,12 @@ for language in languages:
         if pdf is not None:
             right.download_button(f"{language} · Download PDF + Appendix",pdf,stem+".pdf",mime="application/pdf",key="pdf"+language)
     except Exception as e:st.error(f'{language} 报告生成失败：{e}')
+op_cn, cash_cn, note_cn = _single_summary_preview(r, prior_row, True)
+op_en, cash_en, note_en = _single_summary_preview(r, prior_row, False)
+show_communications(str(p.get('Property Name / LLC') or selected), month,
+                    op_cn, cash_cn, note_cn, op_en, cash_en, note_en,
+                    key='single_'+re.sub(r'[^a-zA-Z0-9]', '_', selected))
+
 st.subheader('5 · 历史月度记录')
 if rows:st.dataframe(pd.DataFrame([x for x in rows if x['Property ID']==selected]).sort_values('Month (YYYY-MM)'),hide_index=True,use_container_width=True)
 st.caption('内部管理工具。系统不自动付款、不自动发送邮件；现金余额为推算值，确认分红前仍需审核应付款项和实际分红流水。')
