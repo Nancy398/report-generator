@@ -1,5 +1,5 @@
-"""Combined LLC reporting: property operating results stay separate; LLC cash is entered once.
-No property-level cash figures are summed or reused for LLC distributions.
+"""Combined LLC reporting grouped by Property Name / LLC.
+Property operating metrics remain separate; distinct property cash and reserves are summed.
 """
 import io, re, shutil, subprocess, tempfile
 from pathlib import Path
@@ -25,9 +25,9 @@ def previous_month(month):
     y,m=map(int,month.split('-'))
     return f'{y-1}-12' if m==1 else f'{y}-{m-1:02d}'
 
-def build_model(group,month,properties,statements,llc_records,summaries,llcs):
-    members=[p for p in properties if normalize(p.get('Report Group'))==normalize(group)]
-    if len(members)<2:raise ValueError('Combined Report 至少需要两个 Property，且 Properties 中的 Report Group 必须一致。')
+def build_model(group,month,properties,statements,summaries):
+    members=[p for p in properties if normalize(p.get('Property Name / LLC'))==normalize(group)]
+    if len(members)<2:raise ValueError('Combined Report 至少需要两个 Property，且 Property Name / LLC 相同。')
     month=period(month)
     if not month:raise ValueError('Month 必须是 YYYY-MM')
     ids=[pid(p.get('Property ID')) for p in members]
@@ -46,17 +46,31 @@ def build_model(group,month,properties,statements,llc_records,summaries,llcs):
             'expenses':val(row,'Expenses'),'noi':val(row,'NOI'),
             'occupancy':occupancy(row),'prior_occupancy':occupancy(last),
             'rooms':val(row,'Total Rooms'),'occupied':val(row,'Occupied Rooms')})
-    lr=next((r for r in llc_records if normalize(r.get('Report Group'))==normalize(group) and period(r.get('Month'))==month),None)
-    if lr is None:raise ValueError(f'LLC Monthly 缺少 {group} / {month} 的记录。合并报告的现金及分红必须由 LLC 单独提供，不能从物业记录相加。')
-    required=['Ending Cash','Required Reserve','Distribution Paid']
-    missing=[x for x in required if val(lr,x) is None]
-    if missing:raise ValueError('LLC Monthly 缺少 '+', '.join(missing)+'；请填写 LLC 统一余额及实际分红（无分红填 0）。')
-    cash=val(lr,'Ending Cash');reserve=val(lr,'Required Reserve');dist=val(lr,'Distribution Paid')
-    if reserve<0 or dist<0:raise ValueError('Reserve 和 Distribution Paid 不能为负数。')
+    # Every property is an independent cash/reserve ledger. Sum the ending balances
+    # only once per unique Property ID, then calculate LLC shortfall and availability.
+    # This mode must not be used if the property rows duplicate one shared bank balance.
+    cash=0.0;reserve=0.0;dist=0.0
+    frequencies=set()
+    for p,k in zip(members,ids):
+        row=next(x for x in statements if pid(x.get('Property ID'))==k and period(x.get('Month (YYYY-MM)'))==month)
+        required_cash=['Ending Cash','Distribution Paid']
+        missing=[field for field in required_cash if val(row,field) is None]
+        if val(row,'Required Reserve') is None and val(row,'Total Required Reserve') is None:
+            missing.append('Required Reserve / Total Required Reserve')
+        if missing:
+            raise ValueError(f'{k} {month} 缺少 {", ".join(missing)}，请先保存该物业的现金和 Reserve 计算结果。')
+        cash+=val(row,'Ending Cash')
+        reserve+=(val(row,'Required Reserve') if val(row,'Required Reserve') is not None else val(row,'Total Required Reserve'))
+        dist+=val(row,'Distribution Paid')
+        f=str(p.get('Distribution Frequency','Monthly') or 'Monthly').strip().lower()
+        if f not in ('monthly','quarterly'):
+            raise ValueError(f'{k} 的 Distribution Frequency 必须是 Monthly 或 Quarterly。')
+        frequencies.add(f)
+    if len(set(ids))!=len(ids):raise ValueError('Properties 中有重复 Property ID，请先清理，避免现金重复计算。')
+    if len(frequencies)!=1:
+        raise ValueError('同一个 LLC 下所有物业的 Distribution Frequency 必须一致。')
+    freq=next(iter(frequencies)).title()
     available=max(0,cash-reserve);shortfall=max(0,reserve-cash)
-    config=next((x for x in llcs if normalize(x.get('Report Group'))==normalize(group)),{})
-    freq=str(config.get('Distribution Frequency','') or '').strip()
-    if freq.lower() not in ('monthly','quarterly'):raise ValueError('请在 LLCs 工作表设置 Distribution Frequency = Monthly 或 Quarterly。')
     summary=next((s for s in summaries if normalize(s.get('Property'))==normalize(group) and period(s.get('Month'))==month),{})
     return {'group':group,'month':month,'properties':data,'cash':cash,'reserve':reserve,'shortfall':shortfall,
         'available':available,'distribution':dist,'frequency':freq,'summary_cn':str(summary.get('Summary CN','') or ''),
@@ -98,13 +112,23 @@ def table(doc,heads,rows,cn=False):
 
 def _occ_sentence(item,cn):
     now=item['occupancy'];old=item['prior_occupancy'];name=item['name']
-    if now is None:return (f'{name}：本月入住率暂无数据。' if cn else f'{name}: occupancy data was not provided.')
-    if old is None:return (f'{name}：本月入住率 {now:.1f}%，暂无上月可比数据。' if cn else f'{name}: occupancy was {now:.1f}%; prior-month data was unavailable.')
+    if now is None:return (f'{name}：本月入住率暂无数据，NOI 为 {money(item["noi"])}。' if cn else f'{name}: occupancy data was unavailable; NOI was {money(item["noi"])}.')
+    if old is None:return (f'{name}：本月入住率 {now:.1f}%，暂无上月可比数据；NOI 为 {money(item["noi"])}。' if cn else f'{name}: occupancy was {now:.1f}%; prior-month data was unavailable; NOI was {money(item["noi"])}.')
     d=now-old
     if abs(d)<.005:change=('环比持平' if cn else 'unchanged month over month')
     elif cn:change=f'环比{"上升" if d>0 else "下降"} {abs(d):.1f} 个百分点'
     else:change=f'{"up" if d>0 else "down"} {abs(d):.1f} percentage points month over month'
     return (f'{name}：入住率 {now:.1f}%（{change}），NOI 为 {money(item["noi"])}。' if cn else f'{name}: occupancy {now:.1f}% ({change}); NOI {money(item["noi"])}.')
+
+def generated_summary(model,cn=False):
+    """Same auto-generated narrative for preview and exported Word/PDF."""
+    operating='\n'.join(_occ_sentence(p,cn) for p in model['properties'])
+    if model['frequency'].lower()=='quarterly':
+        cash=(f'截至本月末，LLC 累计可分配现金为 {money(model["available"])}。' if cn else f'Cumulative LLC cash available for distribution at month-end was {money(model["available"])}.')
+        cash+=('该余额将结转至下一次季度分红评估。' if cn else ' The balance will carry forward to the next quarterly distribution review.')
+    else:
+        cash=(f'本月 LLC 期末可分配现金为 {money(model["available"])}。' if cn else f'LLC available cash at month-end was {money(model["available"])}.')
+    return operating,cash
 
 def make_combined_docx(model,cn=False):
     doc=Document();sec=doc.sections[0];sec.top_margin=Inches(.72);sec.bottom_margin=Inches(.68)
@@ -121,11 +145,7 @@ def make_combined_docx(model,cn=False):
     add_text(doc,'经营表现' if cn else 'OPERATING PERFORMANCE',cn,10,True,NAVY,4)
     for p in model['properties']:add_text(doc,_occ_sentence(p,cn),cn,9.5,False,None,5)
     add_text(doc,'LLC 现金及分红' if cn else 'LLC CASH & DISTRIBUTIONS',cn,10,True,NAVY,4)
-    if model['frequency'].lower()=='quarterly':
-        text=(f'截至本月末，LLC 累计可分配现金为 {money(model["available"])}。' if cn else f'Cumulative LLC cash available for distribution at month-end was {money(model["available"])}.')
-        if model['distribution']>0:text+=(f'本月实际分红 {money(model["distribution"])}，上述余额为分红后金额。' if cn else f' Distributions paid this month were {money(model["distribution"])}; the balance shown is after distributions.')
-        else:text+=('该余额将结转至下一次季度分红评估。' if cn else ' The balance will carry forward to the next quarterly distribution review.')
-    else:text=(f'本月 LLC 期末可分配现金为 {money(model["available"])}，本月实际分红总额为 {money(model["distribution"])}。' if cn else f'LLC available cash at month-end was {money(model["available"])}; actual distributions this month totaled {money(model["distribution"])}.')
+    _,text=generated_summary(model,cn)
     add_text(doc,text,cn,9.5)
     notes=model['summary_cn' if cn else 'summary_en'].strip()
     if notes:
@@ -142,7 +162,7 @@ def make_combined_docx(model,cn=False):
         ('Combined NOI',money(model['total_noi'])),('LLC Ending Cash',money(model['cash'])),
         ('LLC Required Reserve',money(model['reserve'])),('LLC Reserve Shortfall',money(model['shortfall'])),
         ('LLC Available to Distribute',money(model['available'])),('LLC Distribution Paid',money(model['distribution']))],cn)
-    add_text(doc,'现金及 Reserve 使用 LLC Monthly 工作表中的统一记录；不对两个物业的现金余额求和。' if cn else 'LLC cash and reserves come from the single LLC Monthly record; property cash balances are not summed.',cn,8,False,None,3)
+    add_text(doc,'现金及 Reserve 按各物业独立记录汇总，分红按 LLC 合计；不得重复录入共用银行账户余额。' if cn else 'Cash and reserves are summed from distinct property records; LLC distributions are consolidated. Do not duplicate a shared bank balance.',cn,8,False,None,3)
     out=io.BytesIO();doc.save(out);return out.getvalue()
 
 def make_combined_pdf(docx_bytes):
