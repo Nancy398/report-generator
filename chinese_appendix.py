@@ -1,7 +1,5 @@
 """Generate Chinese supporting PDFs from text-based AppFolio PDFs (no external AI)."""
 import io,re
-from pathlib import Path
-from reportlab.lib.utils import ImageReader
 import fitz
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Table, TableStyle, Spacer, KeepTogether
 from reportlab.lib import colors
@@ -49,42 +47,14 @@ def _p(s,style):return Paragraph(escape(str(s)),style)
 
 def _base(title,property_name,period,land=False):
     buf=io.BytesIO();page=landscape(A4) if land else A4
-    doc=SimpleDocTemplate(buf,pagesize=page,leftMargin=30,rightMargin=30,topMargin=94,bottomMargin=30)
+    doc=SimpleDocTemplate(buf,pagesize=page,leftMargin=30,rightMargin=30,topMargin=32,bottomMargin=30)
     normal,small=_styles()
-    story=[]
-    # Page header is drawn on the canvas so the left title and right logo
-    # stay aligned, including on continuation pages.
-    def draw_header(canvas,document):
-        canvas.saveState()
-        w,h=page
-        canvas.setFillColor(colors.HexColor('#17334f'))
-        canvas.setFont(FONT,13)
-        canvas.drawString(30,h-40,title)
-        canvas.setFont(FONT,8)
-        label=str(property_name or 'Moo Housing Inc.')
-        canvas.drawString(30,h-56,label[:90])
-        canvas.setFont(FONT,7.5)
-        canvas.drawString(30,h-70,(str(period)+'  ·  USD').strip())
-        logo=Path(__file__).with_name('moo_logo.png')
-        if logo.exists():
-            try:
-                image=ImageReader(str(logo));iw,ih=image.getSize()
-                maxw,maxh=76,52
-                scale=min(maxw/iw,maxh/ih)
-                ww,hh=iw*scale,ih*scale
-                canvas.drawImage(image,w-30-ww,h-22-hh,width=ww,height=hh,mask='auto')
-            except Exception:
-                pass
-        canvas.setStrokeColor(colors.HexColor('#d5e0e9'))
-        canvas.line(30,h-82,w-30,h-82)
-        canvas.restoreState()
-    doc._moo_header=draw_header
+    story=[_p(title,ParagraphStyle('title',parent=normal,fontSize=18,leading=24,textColor=colors.HexColor('#17334f'))),Spacer(1,8),_p('Moo Housing Inc.  |  '+property_name,normal),_p(period+'    USD',small),Spacer(1,16)]
     return buf,doc,story,normal,small
 
 def _table(story,rows,widths,small,headers=True):
     if not rows:return
-    header_style=ParagraphStyle('table_header',parent=small,textColor=colors.white,fontName=FONT)
-    data=[[_p(c,header_style if headers and i==0 else small) for c in row] for i,row in enumerate(rows)]
+    data=[[_p(c,small) for c in row] for row in rows]
     table=Table(data,colWidths=widths,repeatRows=1 if headers else 0,hAlign='LEFT')
     cmds=[('VALIGN',(0,0),(-1,-1),'TOP'),('LEFTPADDING',(0,0),(-1,-1),6),('RIGHTPADDING',(0,0),(-1,-1),6),('TOPPADDING',(0,0),(-1,-1),5),('BOTTOMPADDING',(0,0),(-1,-1),5),('LINEBELOW',(0,0),(-1,0),.7,colors.HexColor('#d5e0e9'))]
     if headers:cmds.extend([('BACKGROUND',(0,0),(-1,0),colors.HexColor('#17334f')),('TEXTCOLOR',(0,0),(-1,0),colors.white)])
@@ -125,7 +95,7 @@ def translate_income(pdf,property_name='',period=''):
     _table(story,highlights,[177,177,177],normal);story.append(Spacer(1,16))
     _table(story,rows,[300,115,116],small)
     story.extend([Spacer(1,12),_p('财务管理报表  |  数据来源：原始 AppFolio Income Statement',small)])
-    doc.build(story,onFirstPage=doc._moo_header,onLaterPages=doc._moo_header);return buf.getvalue()
+    doc.build(story);return buf.getvalue()
 
 def translate_rent_roll(pdf,property_name='',period=''):
     lines=_lines(pdf);room_re=re.compile(r'\b(?:Rm|Room|Bed)\s*[-#]?\s*\w+',re.I)
@@ -157,4 +127,4 @@ def translate_rent_roll(pdf,property_name='',period=''):
     story.extend([_p(f'实际房间：{len(rows)-1}  |  已入住：{occupied}  |  当前出租率：{occupied/(len(rows)-1):.1%}',normal),Spacer(1,12)])
     _table(story,rows,[158,86,104,63,63,76,76,76],small)
     story.extend([Spacer(1,10),_p('注：仅统计实际 Rm 房间行，不计入楼栋及楼层主行。数据来源：AppFolio Rent Roll。',small)])
-    doc.build(story,onFirstPage=doc._moo_header,onLaterPages=doc._moo_header);return buf.getvalue()
+    doc.build(story);return buf.getvalue()
