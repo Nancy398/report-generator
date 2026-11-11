@@ -104,47 +104,102 @@ def parse_rent_roll(sheets):
             'occupancy': occupied_count / total, 'warnings': warnings}
 
 def calculate(properties, statements):
-    """One property-month row, chronological. Tax/insurance payments reduce required reserve.
-    Cash movement: NOI + cash adjustments - distribution - cash expenses not included in NOI.
-    Verified bank balance overrides modeled ending cash and carries forward.
+    """Monthly cash and cumulative reserve roll-forward; no bank reconciliation.
+
+    A legacy first-month record with Ending Cash and Total Required Reserve is
+    treated as an explicitly imported historical closing snapshot, not a bank check.
     """
-    pmap={pid(r.get('Property ID')):r for r in properties if pid(r.get('Property ID'))}
-    grouped={};issues=[];out=[]
+    pmap = {pid(r.get('Property ID')): r for r in properties if pid(r.get('Property ID'))}
+    grouped, issues, out = {}, [], []
     for r in statements:
-        k=pid(r.get('Property ID'));m=period(r.get('Month (YYYY-MM)'))
-        if not k or not m:continue
-        if k not in pmap:issues.append(f'{k} {m}: Property ID 不在 Properties');continue
-        if (k,m) in grouped:issues.append(f'{k} {m}: 重复月份');continue
-        grouped[(k,m)]=r
-    for k in pmap:
-        p=pmap[k];cash=number(p.get('Opening Cash'));reserve=number(p.get('Opening Required Reserve'))
-        months=sorted(m for (x,m) in grouped if x==k)
-        last=None
+        k, m = pid(r.get('Property ID')), period(r.get('Month (YYYY-MM)'))
+        if not k or not m:
+            continue
+        if k not in pmap:
+            issues.append(f'{k} {m}: Property ID 不在 Properties')
+            continue
+        if (k, m) in grouped:
+            issues.append(f'{k} {m}: 重复月份')
+            continue
+        grouped[(k, m)] = r
+    for k, p in pmap.items():
+        cash = number(p.get('Opening Cash'))
+        reserve = number(p.get('Opening Required Reserve'))
+        tax_reserve = number(p.get('Opening Tax Reserve'), reserve)
+        insurance_reserve = number(p.get('Opening Insurance Reserve'), 0)
+        monthly_tax = number(p.get('Monthly Tax Reserve'))
+        monthly_ins = number(p.get('Monthly Insurance Reserve'))
+        months = sorted(m for x, m in grouped if x == k)
+        last = None
         for m in months:
-            r=grouped[(k,m)]
+            r = grouped[(k, m)]
             if last:
-                months_gap=(int(m[:4])-int(last[:4]))*12+int(m[5:])-int(last[5:])
-                if months_gap>1:issues.append(f'{k}: {last} → {m} 缺少 {months_gap-1} 个月；累计 Reserve 可能偏低')
-            noi=number(r.get('NOI'))
-            tax=number(r.get('Property Tax Paid'));ins=number(r.get('Insurance Paid'))
-            other=number(r.get('Other Cash Expense'));dist=number(r.get('Distribution Paid'))
-            adjustments=number(r.get('Other Cash Adjustments'))
-            # Default YES: Tax/Insurance already recognized in NOI. Still release reserve.
-            already=str(r.get('Tax/Insurance Included in NOI?','Yes')).strip().lower() not in ('no','false','0')
-            extra=tax+ins if not already else 0
-            modeled=cash+noi+adjustments-other-dist-extra
-            verified=number(r.get('Verified Ending Bank Balance'),None)
-            cash=verified if verified is not None else modeled
-            reserve=max(0,reserve+number(p.get('Monthly Tax Reserve'))+number(p.get('Monthly Insurance Reserve'))-tax-ins)
-            if cash<0:issues.append(f'{k} {m}: Ending Cash 为负数')
-            if verified is not None and abs(verified-modeled)>0.01:issues.append(f'{k} {m}: 银行余额与推算差额 ${verified-modeled:,.2f}，请核对现金调整项')
-            available=max(0,cash-reserve)
-            shortfall=max(0,reserve-cash)
-            out.append({'Property ID':k,'Month (YYYY-MM)':m,'Income':number(r.get('Income')),'Expenses':number(r.get('Expenses')),'NOI':noi,
-                        'Occupancy':number(r.get('Occupancy'),None),'Occupied Rooms':number(r.get('Occupied Rooms'),None),'Total Rooms':number(r.get('Total Rooms'),None),
-                        'Beginning Cash':round(modeled-noi-adjustments+other+dist+extra,2),'Modeled Ending Cash':round(modeled,2),'Ending Cash':round(cash,2),
-                        'Required Reserve':round(reserve,2),'Reserve Shortfall':round(shortfall,2),'Available to Distribute':round(available,2),
-                        'Distribution Paid':dist,'Property Tax Paid':tax,'Insurance Paid':ins,'Bank Reconciled':verified is not None,
-                        'Status':str(r.get('Status','Draft') or 'Draft')})
-            last=m
-    return out,issues
+                gap = (int(m[:4])-int(last[:4]))*12 + int(m[5:])-int(last[5:])
+                if gap > 1:
+                    issues.append(f'{k}: {last} → {m} 缺少 {gap-1} 个月；现金和累计 Reserve 未包含缺失月份')
+            begin = cash
+            noi = number(r.get('NOI'))
+            tax = number(r.get('Property Tax Paid'))
+            ins = number(r.get('Insurance Paid'))
+            other = number(r.get('Other Cash Expense'))
+            dist = number(r.get('Distribution Paid'))
+            adj = number(r.get('Other Cash Adjustments'))
+            modeled = begin + noi - tax - ins - other - dist + adj
+            new_tax_reserve = tax_reserve + monthly_tax - tax
+            new_insurance_reserve = insurance_reserve + monthly_ins - ins
+            new_reserve = new_tax_reserve + new_insurance_reserve
+            # Preserve the first imported historical closing snapshot as the
+            # starting point for subsequent months, rather than discarding it.
+            legacy_snapshot = (last is None and str(r.get('Calculation Version', '')).strip() == ''
+                               and str(r.get('Ending Cash', '')).strip() != ''
+                               and str(r.get('Total Required Reserve', '')).strip() != '')
+            if legacy_snapshot:
+                cash = number(r.get('Ending Cash'))
+                reserve = number(r.get('Total Required Reserve'))
+                tax_reserve = number(r.get('Tax Reserve Required'), None)
+                insurance_reserve = number(r.get('Insurance Reserve Required'), None)
+                if tax_reserve is None and insurance_reserve is None:
+                    tax_reserve, insurance_reserve = reserve, 0.0
+                elif tax_reserve is None:
+                    tax_reserve = reserve - insurance_reserve
+                elif insurance_reserve is None:
+                    insurance_reserve = reserve - tax_reserve
+                issues.append(f'{k} {m}: 使用已有历史期末余额作为起始基准；以后月份自动滚动计算')
+            else:
+                cash = modeled
+                reserve = new_reserve
+                tax_reserve = new_tax_reserve
+                insurance_reserve = new_insurance_reserve
+            if cash < 0:
+                issues.append(f'{k} {m}: Ending Cash 为负数')
+            available = max(0, cash - reserve)
+            shortfall = max(0, reserve - cash)
+            out.append({'Property ID': k, 'Month (YYYY-MM)': m,
+                'Income': number(r.get('Income')), 'Expenses': number(r.get('Expenses')),
+                'NOI': noi, 'Rent Income': number(r.get('Rent Income'), None),
+                'Utility Income': number(r.get('Utility Income'), None),
+                'Other Income': number(r.get('Other Income'), None),
+                'Occupancy': number(r.get('Occupancy'), None),
+                'Occupied Rooms': number(r.get('Occupied Rooms'), None),
+                'Total Rooms': number(r.get('Total Rooms'), None),
+                'Beginning Cash': round(begin, 2),
+                'Modeled Ending Cash': round(cash if legacy_snapshot else modeled, 2),
+                'Historical Snapshot': legacy_snapshot,
+                'Ending Cash': round(cash, 2),
+                'Monthly Tax Reserve': round(monthly_tax, 2),
+                'Monthly Insurance Reserve': round(monthly_ins, 2),
+                'Monthly Reserve Addition': round(monthly_tax + monthly_ins, 2),
+                'Tax Reserve Required': round(tax_reserve, 2),
+                'Insurance Reserve Required': round(insurance_reserve, 2),
+                'Total Required Reserve': round(reserve, 2),
+                'Required Reserve': round(reserve, 2),
+                'Reserve Shortfall': round(shortfall, 2),
+                'Available to Distribute': round(available, 2),
+                'Distribution Paid': dist, 'Property Tax Paid': tax,
+                'Insurance Paid': ins, 'Other Cash Expense': other,
+                'Other Cash Adjustments': adj,
+                'Notes': str(r.get('Notes', '') or ''),
+                'Summary': str(r.get('Summary', r.get('Notes', '')) or ''),
+                'Status': str(r.get('Status', 'Draft') or 'Draft')})
+            last = m
+    return out, issues
