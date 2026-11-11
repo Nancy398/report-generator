@@ -13,7 +13,7 @@ st.set_page_config(page_title='Moo Housing | Investor Report Generator',layout='
 st.title('MOO HOUSING · Investor Report Generator')
 st.caption('AppFolio PDF → NOI / Occupancy → Cash & Reserve → Word / PDF with original PDF appendices')
 HERE=Path(__file__).parent
-SHEETS=['Properties','Monthly Statements','Investors','Distribution History']
+SHEETS=['Properties','Monthly Statements','Investors','Distribution History','Summaries','LLCs','LLC Monthly']
 DB=Path('/tmp')/'moo_local_records.sqlite3'
 
 def local_db():
@@ -107,10 +107,57 @@ with st.sidebar:
     st.caption('固定读取名为 Reports 的 Google Sheets；请将其共享给 Service Account（Editor）。')
 if not data or 'Properties' not in data or 'Monthly Statements' not in data:
     st.info('请先上传压缩包中的 Master Excel，或连接 Google Sheets。');st.stop()
-props=records(data['Properties']);sheet_monthly=records(data['Monthly Statements'])
+props=records(data['Properties']);sheet_monthly=records(data['Monthly Statements']);summaries=records(data.get('Summaries'))
 if not props:st.error('Properties 没有物业信息');st.stop()
 pmap={pid(p.get('Property ID')):p for p in props if pid(p.get('Property ID'))}
 if not pmap:st.stop()
+report_type=st.radio('Report Type',['Single Property Report','Combined LLC Report'],horizontal=True)
+if report_type=='Combined LLC Report':
+    from combined_llc import build_model,make_combined_docx,make_combined_pdf
+    from reporting import append_pdf_documents
+    groups={}
+    for prop in props:
+        group=str(prop.get('Report Group','') or '').strip()
+        if group:groups.setdefault(group,[]).append(prop)
+    options=[g for g,members in groups.items() if len(members)>=2]
+    if not options:
+        st.error('请在 Properties 中新增 Report Group，并为同一 LLC 的两个或以上物业填写相同组名。')
+        st.stop()
+    group=st.selectbox('LLC / Report Group',options)
+    month_combined=st.text_input('Reporting Month (YYYY-MM)',value=datetime.now().strftime('%Y-%m'),key='combined_month')
+    st.caption('Included properties: '+', '.join(str(p.get('Property Address') or p.get('Property ID')) for p in groups[group]))
+    st.info('先在 Single Property Report 分别保存每个物业当月 AppFolio 运营数据；LLC 现金、Reserve 和 Distribution 仅在 LLC Monthly 工作表填写一次。')
+    if 'LLC Monthly' not in data or 'LLCs' not in data:
+        st.error('Google Sheets 需要增加 LLCs 和 LLC Monthly 两个工作表；具体表头见 ZIP 中的 README。')
+        st.stop()
+    try:
+        model=build_model(group,month_combined,props,sheet_monthly,records(data.get('LLC Monthly')),summaries,records(data.get('LLCs')))
+    except Exception as e:
+        st.error(f'无法生成合并报告：{e}')
+        st.stop()
+    st.subheader('Combined Executive Summary')
+    st.dataframe(pd.DataFrame(model['properties'])[['name','occupancy','prior_occupancy','noi','rent','income','expenses']],hide_index=True,use_container_width=True)
+    c1,c2,c3=st.columns(3)
+    c1.metric('LLC Available Cash',f"${model['available']:,.2f}")
+    c2.metric('LLC Distribution Paid',f"${model['distribution']:,.2f}")
+    c3.metric('LLC Reserve Shortfall',f"${model['shortfall']:,.2f}")
+    st.caption('可分配余额 = max(0, LLC Ending Cash − LLC Required Reserve)；季度余额为期末累计余额，不叠加各月余额。')
+    if model['shortfall']>0:st.warning('LLC 存在 Reserve Shortfall，请先审核分红。')
+    st.subheader('Optional · AppFolio Original PDF Appendices')
+    uploads=st.file_uploader('上传各物业原始 Income Statement / Rent Roll PDF（可多选）',type=['pdf'],accept_multiple_files=True,key='llc_appendices')
+    for language,cn in [('中文',True),('English',False)]:
+        try:
+            doc=make_combined_docx(model,cn)
+            stem=f"Moo_{re.sub(r'[^A-Za-z0-9]+','_',group)}_{month_combined}_{'CN' if cn else 'EN'}_Combined"
+            col1,col2=st.columns(2)
+            col1.download_button(f'{language} · Download Combined Word',doc,stem+'.docx',mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',key='llc_doc'+language)
+            try:
+                pdf=make_combined_pdf(doc)
+                if uploads:pdf=append_pdf_documents(pdf,[(f.name,f.getvalue()) for f in uploads])
+                col2.download_button(f'{language} · Download Combined PDF',pdf,stem+'.pdf',mime='application/pdf',key='llc_pdf'+language)
+            except Exception as e:st.info(f'{language} PDF 暂不可用：{e}')
+        except Exception as e:st.error(f'{language} Word 生成失败：{e}')
+    st.stop()
 selected=st.selectbox('Property',list(pmap),format_func=lambda k:f"{pmap[k].get('Property Name / LLC',k)} ({k})")
 p=pmap[selected]
 st.caption(f"{p.get('Property Address','')}  |  Report Language: {p.get('Report Language','English')}")
@@ -195,6 +242,16 @@ r=match[0]
 r = dict(r)
 r['Notes'] = notes
 r['Summary'] = notes
+# Match the separate Summaries tab by Property ID, property name, or address + month.
+def _match_property(value):
+    def norm(x):return re.sub(r'[^a-z0-9]','',str(x or '').lower())
+    aliases=[selected,p.get('Property ID'),p.get('Property Name / LLC'),p.get('Property Address'),p.get('Property Name')]
+    return bool(norm(value)) and any(norm(value)==norm(x) for x in aliases)
+summary_record=next((s for s in summaries if _match_property(s.get('Property')) and period(s.get('Month'))==month),{})
+r['Summary CN']=str(summary_record.get('Summary CN','') or '').strip()
+r['Summary EN']=str(summary_record.get('Summary EN','') or '').strip()
+r['Distribution Frequency']=str(p.get('Distribution Frequency','Monthly') or 'Monthly').strip()
+
 # Use the current form's income breakdown for report generation, even when
 # a historical calculated row or cached Google Sheets row has missing fields.
 for _field in ('Rent Income', 'Utility Income', 'Other Income'):
@@ -240,6 +297,7 @@ if st.button('💾 Save to Google Sheets' if source.startswith('Google') else '�
         except Exception as e:st.error(f'保存失败：{e}')
 
 st.subheader('4 · Investor Report 下载')
+st.caption('自动经营摘要：入住率环比 + 可分配现金 + 实际分红/季度累计；额外备注读取 Summaries（Property、Month、Summary CN、Summary EN）。Properties 可新增 Distribution Frequency 列，填写 Monthly 或 Quarterly。')
 st.caption('报告收入拆分：Rent Income ${:,.2f} · Utility Income ${:,.2f} · Other Income ${:,.2f}'.format(r['Rent Income'],r['Utility Income'],r['Other Income']))
 if not income_file or not rent_file:st.info('未同时上传两份 AppFolio PDF 报表，以下报告为待核对草稿。')
 if period_mismatch:st.error('报表月份不一致：请先修改 Reporting Month，下载功能已停用。')
