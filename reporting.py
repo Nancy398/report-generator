@@ -245,9 +245,14 @@ def make_docx(row,p,cn=False,previous=None,appendix_documents=None):
         cash_line=('可分配现金余额尚未提供。' if cn else 'Available cash for distribution is unavailable.')
     elif quarterly:
         cash_line=(f'截至本月末，累计可分配现金为 {money(available_num)}。' if cn else f'Cumulative available cash for distribution at month-end was {money(available_num)}.')
-        cash_line+=('该余额将结转至下一季度分红评估。' if cn else ' This balance will carry forward to the next quarterly distribution review.')
+        if distribution_num is not None and distribution_num>0:
+            cash_line+=(f'本月实际分红 {money(distribution_num)}，上述累计余额为分红后的期末余额。' if cn else f' Actual distributions this month were {money(distribution_num)}; the cumulative balance shown is after those distributions.')
+        else:
+            cash_line+=('该余额将结转至下一季度分红评估。' if cn else ' This balance will carry forward to the next quarterly distribution review.')
     else:
         cash_line=(f'本月期末可分配现金余额为 {money(available_num)}。' if cn else f'Available cash for distribution at month-end was {money(available_num)}.')
+        if distribution_num is not None:
+            cash_line+=(f'本月实际分红总额为 {money(distribution_num)}。' if cn else f' Actual distributions during the month totaled {money(distribution_num)}.')
     noi_num=_number(_get(row,'NOI',default=''))
     if noi_num is None:
         noi_line=('本月 NOI 数据尚未提供。' if cn else 'NOI data for this month is unavailable.')
@@ -255,8 +260,9 @@ def make_docx(row,p,cn=False,previous=None,appendix_documents=None):
         noi_line=(f'本月净营业收入（NOI）为 {money(noi_num)}。' if cn else f'Net Operating Income (NOI) for the month was {money(noi_num)}.')
     extra_notes=summary
 
-    rent=_cash(_get(row,'Rent Collected','Rent Collection','Collected Rent'))
-    ar=_cash(_get(row,'Outstanding AR','Accounts Receivable','AR'))
+    # Income Statement rent is accrual/accounting revenue, not verified cash collected.
+    rent=_cash(_get(row,'Rent Income'))
+    ar=_cash(_get(row,'Outstanding Rent Receivable','Outstanding AR','Accounts Receivable','AR'))
     income=_cash(_get(row,'Income','Total Income'))
     rent_income=_cash(_get(row,'Rent Income'))
     utility_income=_cash(_get(row,'Utility Income'))
@@ -288,8 +294,8 @@ def make_docx(row,p,cn=False,previous=None,appendix_documents=None):
                 comp('Occupied Rooms','Occupied Rooms','count'),
                 ('Vacant Rooms',prior_vacant,vacant,_change(vacant,prior_vacant,'count')),
                 comp('Total Rooms','Total Rooms','count'),
-                comp('Rent Collected','Rent Collected','money'),
-                comp('Outstanding AR','Outstanding AR','money')]
+                comp('Rent Income','Rent Income','money'),
+                comp('Outstanding Rent Receivable','Outstanding Rent Receivable','money')]
     appendix_documents = appendix_documents or []
     appendix_items = [(f'Appendix {chr(65+i)}', label.split(' — ')[0].strip() + (f' — {date[:7]}' if date else '')) for i,(label,date) in enumerate(appendix_documents)]
     appendix_intro = ('The following original AppFolio reports are attached after this report for reference. ' + 'They provide supporting details for the financial and occupancy information presented above.') if appendix_items else 'No supporting PDF documents were uploaded for this report.'
@@ -350,7 +356,7 @@ def make_docx(row,p,cn=False,previous=None,appendix_documents=None):
             'CASH POSITION':'现金情况','SOURCE & RECONCILIATION':'数据来源及核对',
             'SUPPORTING DOCUMENTS':'附属报表','DOCUMENT':'文件','DESCRIPTION':'说明',
             'Occupancy Rate':'入住率','Occupied Rooms':'已入住房间','Vacant Rooms':'空置房间',
-            'Total Rooms':'总房间数','Rent Collected':'实收租金','Outstanding AR':'未收应收款',
+            'Total Rooms':'总房间数','Rent Collected':'实收租金','Outstanding AR':'未收应收款','Outstanding Rent Receivable':'未收应收款',
             'Rent Income':'租金收入','Utility Income':'水电及其他服务收入','Other Income':'其他收入','Total Income':'总收入','Operating Expenses':'营业费用','Net Operating Income (NOI)':'净营业收入（NOI）',
             'Available for Distribution Review':'待审核可分配金额','Ending Cash Balance':'期末现金余额',
             'Required Reserve':'要求保留资金','Reserve Shortfall':'预留资金缺口',
