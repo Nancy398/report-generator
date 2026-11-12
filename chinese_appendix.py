@@ -100,34 +100,29 @@ def translate_income(pdf,property_name='',period=''):
     story.extend([Spacer(1,12),_p('财务管理报表  |  数据来源：原始 AppFolio Income Statement',small)])
     doc.build(story);return buf.getvalue()
 
-def translate_rent_roll(pdf,property_name='',period=''):
-    lines=_lines(pdf);room_re=re.compile(r'\b(?:Rm|Room|Bed)\s*[-#]?\s*\w+',re.I)
-    status_re=re.compile(r'\b(?:Notice-Unrented|Notice-Rented|Vacant-Unrented|Vacant-Rented|Current|Vacant)\b',re.I)
-    date_re=re.compile(r'\d{2}/\d{2}/\d{4}')
-    amt_re=re.compile(r'^-?[\d,]+\.\d{2}$')
-    rows=[['房间编号','租客','入住状态','月租金','押金','租约开始','租约结束','入住日期']]
-    seen=set()
-    for pg,y,spans in lines:
-        txt=' '.join(t for x,t in spans)
-        if not room_re.search(txt) or not status_re.search(txt):continue
-        match=status_re.search(txt)
-        left=txt[:match.start()].strip();right=txt[match.end():].strip()
-        # Unit usually appears before tenant; split at first date/status column via x positions when possible.
-        left_spans=[(x,t) for x,t in spans if x<340]
-        unit=' '.join(t for x,t in left_spans if x<220).strip()
-        tenant=' '.join(t for x,t in left_spans if 220<=x<340).strip()
-        if not room_re.search(unit):
-            unit=left.split('  ')[0] if '  ' in left else left
-            tenant=left[len(unit):].strip()
-        if not room_re.search(unit) or unit in seen:continue
-        seen.add(unit)
-        amounts=[t for t in right.split() if amt_re.fullmatch(t)]
-        dates=date_re.findall(right)
-        rows.append([unit,tenant,translate(match.group()),*(amounts+['—','—'])[:2],*(dates+['—','—','—'])[:3]])
-    if len(rows)<2:raise ValueError('无法识别 Rent Roll 房间记录')
-    buf,doc,story,normal,small=_base('物业出租及入住情况表',property_name,period,land=True)
-    occupied=sum(1 for r in rows[1:] if not r[2].startswith('空置'))
-    story.extend([_p(f'实际房间：{len(rows)-1}  |  已入住：{occupied}  |  当前出租率：{occupied/(len(rows)-1):.1%}',normal),Spacer(1,12)])
-    _table(story,rows,[158,86,104,63,63,76,76,76],small)
-    story.extend([Spacer(1,10),_p('注：仅统计实际 Rm 房间行，不计入楼栋及楼层主行。数据来源：AppFolio Rent Roll。',small)])
-    doc.build(story);return buf.getvalue()
+def translate_rent_roll(pdf, property_name='', period=''):
+    from pdf_appfolio import rent_roll_details
+    details = rent_roll_details(pdf)
+    rooms = details['rooms']
+    rows = [['房间编号', '租客／整租租客', '租赁状态', '合同月租金', '押金', '租约起始日', '租约到期日', '入住日期']]
+    for r in rooms:
+        rows.append([
+            r['unit'], r['display_tenant'],
+            r['display_status'] if r['whole_unit_lease'] and r['display_status'] == '整租已出租' else translate(r['display_status']),
+            r['rent'] or '—', r['deposit'] or '—',
+            r['lease_from'] or '—', r['lease_to'] or '—', r['move_in'] or '—',
+        ])
+    occupied = sum(bool(r['occupied']) for r in rooms)
+    total = len(rooms)
+    buf, doc, story, normal, small = _base('物业出租及入住情况表', property_name, period, land=True)
+    story.extend([
+        _p(f'实际房间：{total}  |  已出租房间：{occupied}  |  当前出租率：{occupied/total:.1%}', normal),
+        Spacer(1, 12),
+    ])
+    _table(story, rows, [158, 86, 104, 63, 63, 76, 76, 76], small)
+    story.extend([
+        Spacer(1, 10),
+        _p('注：整租主行已出租时，下属房间按已出租统计；整租租金仅在主行记录，不重复分摊至房间。仅统计实际 Rm 房间行。数据来源：AppFolio Rent Roll。', small),
+    ])
+    doc.build(story)
+    return buf.getvalue()
