@@ -73,27 +73,82 @@ def parse_income_pdf(data):
     found['period']=period
     return found
 
-def parse_rent_roll_pdf(data):
-    lines=_lines(data);rooms=[];asof=None;parent_occupied={};seen=set()
-    for page,y,ws in lines:
-        text=_tokens(ws)
+def rent_roll_details(data):
+    """Room-level occupancy with whole-unit leases inherited by child rooms.
+
+    A parent lease is recognized only when its unit name is repeated after ' - '
+    and it has an occupied/notice status. Parent rent is never counted again
+    as a room's rent. A Vacant-Rented room is not currently occupied.
+    """
+    lines = _lines(data)
+    parents = {}
+    rooms = []
+    seen = set()
+    asof = None
+    status_pattern = re.compile(r'(?<!\w)(?:' + '|'.join(map(re.escape, STATUSES)) + r')(?!\w)', re.I)
+    for page, y, ws in lines:
+        text = _tokens(ws)
         if text.lower().startswith('as of:'):
-            m=re.search(r'(\d{2}/\d{2}/\d{4})',text)
-            if m:
+            match = re.search(r'(\d{2}/\d{2}/\d{4})', text)
+            if match:
                 from datetime import datetime
-                asof=datetime.strptime(m.group(1),'%m/%d/%Y').strftime('%Y-%m')
-        unit=_tokens([w for w in ws if w[0]<330]).strip()
-        status=next((s for s in STATUSES if re.search(r'(?<!\w)'+re.escape(s)+r'(?!\w)',_tokens([w for w in ws if 325<=w[0]<600]),re.I)),None)
-        if not status:continue
-        if ROOM.search(unit):
-            if unit in seen:raise ValueError('Duplicate room record: '+unit)
-            seen.add(unit);rooms.append((unit,status))
-        elif ' - ' in unit and status.lower() not in ('vacant','vacant-unrented','vacant-rented'):
-            parent_occupied[unit.split(' - ')[0].lower()]=True
-    if not rooms:raise ValueError('No room records detected in Rent Roll PDF.')
-    occupied=0
-    for unit,status in rooms:
-        base=unit.split(' - ')[0].lower()
-        occupied+= int(not status.lower().startswith('vacant') or parent_occupied.get(base,False))
-    total=len(rooms)
-    return {'rooms':total,'occupied':occupied,'vacant':total-occupied,'occupancy':occupied/total,'period':asof,'warnings':[]}
+                asof = datetime.strptime(match.group(1), '%m/%d/%Y').strftime('%Y-%m')
+        unit = _tokens([w for w in ws if w[0] < 260]).strip()
+        if ' - ' not in unit:
+            continue
+        status_text = _tokens([w for w in ws if 345 <= w[0] < 450])
+        status_match = status_pattern.search(status_text)
+        if not status_match:
+            continue
+        status = status_match.group(0)
+        tenant = _tokens([w for w in ws if 260 <= w[0] < 345]).strip()
+        def column_text(lo, hi):
+            return _tokens([w for w in ws if lo <= w[0] < hi]).strip()
+        record = {
+            'unit': unit, 'status': status, 'tenant': tenant,
+            'rent': column_text(450, 530), 'deposit': column_text(530, 580),
+            'lease_from': column_text(580, 650),
+            'lease_to': column_text(650, 705), 'move_in': column_text(705, 800),
+        }
+        base, suffix = unit.rsplit(' - ', 1)
+        key = base.strip().casefold()
+        if re.fullmatch(r'(?:Rm|Room|Bed)\s*[-#]?\s*\w+', suffix.strip(), re.I):
+            if unit in seen:
+                raise ValueError('Duplicate room record: ' + unit)
+            seen.add(unit)
+            record['base'] = key
+            rooms.append(record)
+        elif suffix.strip().casefold() == key:
+            # Whole-unit lease: parent is occupied for Current/Notice statuses.
+            parents[key] = record
+    if not rooms:
+        raise ValueError('No room records detected in Rent Roll PDF.')
+    for room in rooms:
+        parent = parents.get(room['base'])
+        inherited = bool(parent and not parent['status'].lower().startswith('vacant'))
+        direct = not room['status'].lower().startswith('vacant')
+        room['occupied'] = direct or inherited
+        room['whole_unit_lease'] = inherited
+        if inherited and not direct:
+            room['display_status'] = '整租已出租'
+            room['display_tenant'] = parent['tenant'] or '整租租客'
+            # Parent lease terms are valid for child rooms, but parent rent is
+            # not apportioned or duplicated across rooms.
+            for field in ('lease_from', 'lease_to', 'move_in'):
+                if not room[field]:
+                    room[field] = parent[field]
+        else:
+            room['display_status'] = room['status']
+            room['display_tenant'] = room['tenant']
+    return {'rooms': rooms, 'period': asof}
+
+
+def parse_rent_roll_pdf(data):
+    details = rent_roll_details(data)
+    rooms = details['rooms']
+    occupied = sum(bool(r['occupied']) for r in rooms)
+    total = len(rooms)
+    return {
+        'rooms': total, 'occupied': occupied, 'vacant': total - occupied,
+        'occupancy': occupied / total, 'period': details['period'], 'warnings': [],
+    }
