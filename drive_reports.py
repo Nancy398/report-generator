@@ -26,7 +26,7 @@ def _safe_name(name):
 def _folder(service, parent, name):
     safe = name.replace('\\', '\\\\').replace("'", "\\'")
     query = "mimeType = 'application/vnd.google-apps.folder' and trashed = false and name = '%s' and '%s' in parents" % (safe, parent)
-    result = service.files().list(q=query, fields='nextPageToken,files(id,name,webViewLink)', page_size=100, supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
+    result = service.files().list(q=query, fields='nextPageToken,files(id,name,webViewLink)', pageSize=100, supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
     if result.get('files'):
         return result['files'][0]['id']
     created = service.files().create(body={'name': name, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [parent]}, fields='id', supportsAllDrives=True).execute()
