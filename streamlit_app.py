@@ -7,7 +7,11 @@ import streamlit as st
 from engine import number,pid,period,read_appfolio,parse_income,parse_rent_roll,calculate
 from reporting import make_docx,make_pdf,append_pdf_documents
 from chinese_appendix import translate_income, translate_rent_roll
-from pdf_appfolio import parse_income_pdf,parse_rent_roll_pdf
+import pdf_appfolio
+print("PDF MODULE PATH:", pdf_appfolio.__file__)
+print("HAS RENT ROLL DETAILS:", hasattr(pdf_appfolio, "rent_roll_details"))
+
+from pdf_appfolio import parse_income_pdf, parse_rent_roll_pdf
 from english_appendix import corrected_rent_roll
 from drive_reports import save_reports
 
