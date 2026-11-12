@@ -53,6 +53,118 @@ def drafts(name, month, operation, cash, notes='', cn=True):
     return subject, email, wechat
 
 
+
+def _num(row, *keys):
+    """Read a financial value only when it exists; never silently invent zero."""
+    row = row or {}
+    for key in keys:
+        value = row.get(key)
+        if value is None or str(value).strip() == '':
+            continue
+        try:
+            return float(str(value).replace('$', '').replace(',', '').replace('%', '').strip())
+        except (ValueError, TypeError):
+            continue
+    return None
+
+
+def _usd(value):
+    return f'${value:,.2f}' if value is not None else 'Not available'
+
+
+def _pct(value):
+    if value is None:
+        return None
+    return value * 100 if -1 <= value <= 1 else value
+
+
+def _english_month(month):
+    import datetime
+    try:
+        return datetime.datetime.strptime(str(month), '%Y-%m').strftime('%B %Y')
+    except ValueError:
+        return str(month)
+
+
+def _detailed_english_email(name, month, row, prior, notes):
+    """Create a complete investor email from actual report fields."""
+    row, prior = row or {}, prior or {}
+    label = _english_month(month)
+    occ, old_occ = _pct(_num(row, 'Occupancy')), _pct(_num(prior, 'Occupancy'))
+    parts = ['Dear Investors,', f'Please find below the key highlights for **{label}**:', '**Operations**']
+    if occ is not None:
+        if old_occ is not None:
+            delta = occ - old_occ
+            movement = ('increased' if delta > 0.005 else 'decreased' if delta < -0.005 else 'remained unchanged')
+            if movement == 'remained unchanged':
+                parts.append(f'The property maintained **{occ:.1f}% occupancy**, unchanged from the previous month.')
+            else:
+                parts.append(f'The property’s occupancy {movement} from {old_occ:.1f}% to **{occ:.1f}%** in {label}.')
+        else:
+            parts.append(f'The property recorded **{occ:.1f}% occupancy** in {label}.')
+    else:
+        parts.append('Occupancy data is not available for this reporting period.')
+    vacant = _num(row, 'Vacant Rooms', 'Vacant rooms', 'Vacant Units')
+    if vacant is not None:
+        parts[-1] += f' {int(vacant) if vacant.is_integer() else vacant:g} rooms were vacant at month-end.'
+
+    parts.append('**Rental Income**')
+    rent, old_rent = _num(row, 'Rent Income'), _num(prior, 'Rent Income')
+    if rent is not None:
+        sentence = f'Rental income was **{_usd(rent)}** in {label}'
+        if old_rent is not None:
+            sentence += f', compared with {_usd(old_rent)} in the previous month'
+        sentence += '.'
+    else:
+        sentence = 'Rental income data is not available for this reporting period.'
+    receivable = _num(row, 'Outstanding Rent Receivable')
+    if receivable is not None:
+        sentence += (' There was no outstanding rent receivable at month-end.' if abs(receivable) < .005 else f' Outstanding rent receivable at month-end was **{_usd(receivable)}**.')
+    parts.append(sentence)
+
+    parts.append('**Financial Performance**')
+    for label_text, keys in [
+        ('Total Income', ('Income', 'Total Income')),
+        ('Utilities Income', ('Utility Income', 'Utilities Income')),
+        ('Operating Expenses', ('Expenses', 'Operating Expenses')),
+        ('Net Operating Income (NOI)', ('NOI',)),
+        ('Reserve Contribution', ('Monthly Reserve Addition', 'Reserve Contribution')),
+    ]:
+        val = _num(row, *keys)
+        if val is not None:
+            amount = f'**{_usd(val)}**' if label_text == 'Net Operating Income (NOI)' else _usd(val)
+            parts.append(f'- **{label_text}:** {amount}')
+
+    parts.append('**Cash Position & Distribution Update**')
+    for label_text, keys in [
+        ('Total Balance Last Month', ('Beginning Cash',)),
+        ('Total Balance This Month', ('Ending Cash', 'Modeled Ending Cash')),
+        ('Total Required Reserve', ('Required Reserve', 'Total Required Reserve')),
+        ('Available Cash for Distribution Review', ('Available to Distribute',)),
+        ('Reserve Shortfall', ('Reserve Shortfall',)),
+    ]:
+        val = _num(row, *keys)
+        if val is not None:
+            parts.append(f'- **{label_text}:** {_usd(val)}')
+
+    shortfall = _num(row, 'Reserve Shortfall')
+    available = _num(row, 'Available to Distribute')
+    quarterly = str(row.get('Distribution Frequency', 'Monthly')).strip().lower() in ('quarterly', 'quarter', '季度', '季度分红')
+    if shortfall is not None and shortfall > 0:
+        parts.append('The current cash balance is below the required reserve. **No cash is available for investor distribution review this month**; funds will remain in the property account to support reserves and ongoing operations.')
+    elif available is not None:
+        if quarterly:
+            parts.append(f'The available balance of **{_usd(available)}** will carry forward to the next quarterly distribution review. This amount does not represent an approved distribution.')
+        else:
+            parts.append(f'**{_usd(available)}** is available for distribution review, subject to management approval and the property’s ongoing cash requirements.')
+
+    if str(notes or '').strip():
+        parts.extend(['**Additional Operating Updates**', str(notes).strip()])
+    parts.extend(['We will continue to monitor rental income, operating expenses, and the property’s cash position.',
+                  'Please refer to the attached monthly report for detailed financial statements, reserve information, and the updated rent roll.',
+                  'Please feel free to reach out with any questions.', 'Moo Housing'])
+    return '\n\n'.join(parts)
+
 def _email_html(body):
     """Convert the report's limited Markdown to safe, selectable HTML."""
     def inline(value):
@@ -107,6 +219,8 @@ def show_communications(name, month, operation_cn, cash_cn, notes_cn='',
         email = email_override_cn
     if not cn and email_override_en is not None:
         email = email_override_en
+    elif not cn and report_row is not None:
+        email = _detailed_english_email(name, month, report_row, previous_row, notes_en)
     email_tab, wechat_tab = st.tabs(['Email Draft · 邮件草稿', 'WeChat · 微信通知'])
     with email_tab:
         st.markdown('**Subject / 邮件标题**')
