@@ -245,14 +245,10 @@ def make_docx(row,p,cn=False,previous=None,appendix_documents=None):
         cash_line=('可分配现金余额尚未提供。' if cn else 'Available cash for distribution is unavailable.')
     elif quarterly:
         cash_line=(f'截至本月末，累计可分配现金为 {money(available_num)}。' if cn else f'Cumulative available cash for distribution at month-end was {money(available_num)}.')
-        if distribution_num is not None and distribution_num>0:
-            cash_line+=(f'本月实际分红 {money(distribution_num)}，上述累计余额为分红后的期末余额。' if cn else f' Actual distributions this month were {money(distribution_num)}; the cumulative balance shown is after those distributions.')
-        else:
-            cash_line+=('该余额将结转至下一季度分红评估。' if cn else ' This balance will carry forward to the next quarterly distribution review.')
+        cash_line+=('该余额将结转至下一季度分红评估。' if cn else ' This balance will carry forward to the next quarterly distribution review.')
     else:
         cash_line=(f'本月期末可分配现金余额为 {money(available_num)}。' if cn else f'Available cash for distribution at month-end was {money(available_num)}.')
-        if distribution_num is not None:
-            cash_line+=(f'本月实际分红总额为 {money(distribution_num)}。' if cn else f' Actual distributions during the month totaled {money(distribution_num)}.')
+
     noi_num=_number(_get(row,'NOI',default=''))
     if noi_num is None:
         noi_line=('本月 NOI 数据尚未提供。' if cn else 'NOI data for this month is unavailable.')
