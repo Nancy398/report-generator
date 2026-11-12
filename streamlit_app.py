@@ -7,10 +7,10 @@ import streamlit as st
 from engine import number,pid,period,read_appfolio,parse_income,parse_rent_roll,calculate
 from reporting import make_docx,make_pdf,append_pdf_documents
 from chinese_appendix import translate_income, translate_rent_roll
-import pdf_appfolio
-from pdf_appfolio import parse_income_pdf, parse_rent_roll_pdf
+from pdf_appfolio import parse_income_pdf,parse_rent_roll_pdf
 from english_appendix import corrected_rent_roll
 from drive_reports import save_reports
+from investor_communication import show_communications
 
 st.set_page_config(page_title='Moo Housing | Investor Report Generator',layout='wide')
 st.title('MOO HOUSING · Investor Report Generator')
@@ -184,6 +184,13 @@ if report_type=='Combined LLC Report':
             st.success(f"已保存 {len(result['files'])} 个文件到 Google Drive")
             st.link_button('Open LLC Reports Folder',result['folder_url'])
         except Exception as e:st.error(f'Google Drive 保存失败：{e}')
+    # Restore bilingual investor email and WeChat drafts (no automatic sending).
+    from combined_llc import generated_summary
+    op_cn, cash_cn = generated_summary(model, True)
+    op_en, cash_en = generated_summary(model, False)
+    show_communications(group, month_combined, op_cn, cash_cn, model.get('summary_cn',''),
+                        op_en, cash_en, model.get('summary_en',''),
+                        key='llc_'+re.sub(r'[^a-zA-Z0-9]', '_', group))
     st.stop()
 selected=st.selectbox('Property',list(pmap),format_func=lambda k:f"{pmap[k].get('Property Name / LLC',k)} ({k})")
 p=pmap[selected]
@@ -298,6 +305,45 @@ prior_row={**prior_saved, **(prior_row or {})}
 for _field in ('Rent Income', 'Outstanding Rent Receivable'):
     if prior_row.get(_field) in (None, '') and prior_saved.get(_field) not in (None, ''):
         prior_row[_field]=prior_saved[_field]
+def _summary_number(value):
+    try:
+        if value is None or str(value).strip() == '':
+            return None
+        return float(str(value).replace(',', '').replace('$', '').replace('%', ''))
+    except (TypeError, ValueError):
+        return None
+
+def _single_summary_preview(row, previous_row, chinese):
+    fmt=lambda n: f'${n:,.2f}'
+    current=_summary_number(row.get('Occupancy'))
+    previous_occ=_summary_number((previous_row or {}).get('Occupancy'))
+    pct=lambda v: v*100 if v is not None and v<=1 else v
+    if current is None:
+        occ='本月入住率数据尚未提供。' if chinese else 'Current-month occupancy data is unavailable.'
+    elif previous_occ is None:
+        occ=(f'本月入住率为 {pct(current):.1f}%；暂无上月可比数据。' if chinese else f'Occupancy was {pct(current):.1f}% this month; prior-month data is unavailable.')
+    else:
+        delta=pct(current)-pct(previous_occ)
+        if chinese:
+            occ=f'本月入住率为 {pct(current):.1f}%，上月为 {pct(previous_occ):.1f}%，' + (f'环比上升 {delta:.1f} 个百分点。' if delta>0.005 else f'环比下降 {abs(delta):.1f} 个百分点。' if delta< -0.005 else '环比持平。')
+        else:
+            occ=f'Occupancy was {pct(current):.1f}% versus {pct(previous_occ):.1f}% last month; ' + (f'it increased by {delta:.1f} percentage points.' if delta>0.005 else f'it decreased by {abs(delta):.1f} percentage points.' if delta< -0.005 else 'it remained unchanged.')
+    noi_value=_summary_number(row.get('NOI'))
+    noi_text=(f'本月净营业收入（NOI）为 {fmt(noi_value)}。' if chinese else f'Net Operating Income (NOI) for the month was {fmt(noi_value)}.') if noi_value is not None else ('本月 NOI 数据尚未提供。' if chinese else 'NOI data for this month is unavailable.')
+    available=_summary_number(row.get('Available to Distribute'))
+    paid=_summary_number(row.get('Distribution Paid'))
+    quarterly=str(row.get('Distribution Frequency','Monthly')).strip().lower() in ('quarterly','quarter','季度','季度分红')
+    if available is None:
+        cash='可分配现金余额尚未提供。' if chinese else 'Available cash for distribution is unavailable.'
+    elif quarterly:
+        cash=(f'截至本月末，累计可分配现金为 {fmt(available)}。' if chinese else f'Cumulative available cash for distribution at month-end was {fmt(available)}.')
+        cash+=('该余额将结转至下一季度分红评估。' if chinese else ' This balance will carry forward to the next quarterly distribution review.')
+    else:
+        cash=(f'本月期末可分配现金余额为 {fmt(available)}。' if chinese else f'Available cash for distribution at month-end was {fmt(available)}.')
+    note=str(row.get('Summary CN' if chinese else 'Summary EN','') or '').strip() or str(row.get('Summary','') or '').strip()
+    return occ+' '+noi_text,cash,note
+
+
 st.subheader('3 · 自动计算结果')
 x,y,z,w=st.columns(4)
 x.metric('NOI',f"${r['NOI']:,.2f}");y.metric('Modeled Ending Cash',f"${r['Ending Cash']:,.2f}");z.metric('Cumulative Required Reserve',f"${r['Required Reserve']:,.2f}");w.metric('Shortfall' if r['Reserve Shortfall']>0 else 'Available Distribution',f"${max(r['Reserve Shortfall'],r['Available to Distribute']):,.2f}")
@@ -381,6 +427,13 @@ if report_artifacts and not period_mismatch:
             st.success(f"已保存 {len(result['files'])} 个文件到 Google Drive")
             st.link_button('Open LLC Reports Folder',result['folder_url'])
         except Exception as e:st.error(f'Google Drive 保存失败：{e}')
+# Restore bilingual investor communication drafts after report generation.
+op_cn, cash_cn, note_cn = _single_summary_preview(r, prior_row, True)
+op_en, cash_en, note_en = _single_summary_preview(r, prior_row, False)
+show_communications(str(p.get('Property Name / LLC') or selected), month,
+                    op_cn, cash_cn, note_cn, op_en, cash_en, note_en,
+                    key='single_'+re.sub(r'[^a-zA-Z0-9]', '_', selected))
+
 st.subheader('5 · 历史月度记录')
 if rows:st.dataframe(pd.DataFrame([x for x in rows if x['Property ID']==selected]).sort_values('Month (YYYY-MM)'),hide_index=True,use_container_width=True)
 st.caption('内部管理工具。系统不自动付款、不自动发送邮件；现金余额为推算值，确认分红前仍需审核应付款项和实际分红流水。')
