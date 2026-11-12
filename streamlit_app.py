@@ -8,6 +8,8 @@ from engine import number,pid,period,read_appfolio,parse_income,parse_rent_roll,
 from reporting import make_docx,make_pdf,append_pdf_documents
 from chinese_appendix import translate_income, translate_rent_roll
 from pdf_appfolio import parse_income_pdf,parse_rent_roll_pdf
+from english_appendix import corrected_rent_roll
+from drive_reports import save_reports
 
 st.set_page_config(page_title='Moo Housing | Investor Report Generator',layout='wide')
 st.title('MOO HOUSING · Investor Report Generator')
@@ -119,13 +121,13 @@ if report_type=='Combined LLC Report':
     from reporting import append_pdf_documents
     groups={}
     for prop in props:
-        group=str(prop.get('Report Group','') or '').strip()
+        group=str(prop.get('Property Name / LLC','') or '').strip()
         if group:groups.setdefault(group,[]).append(prop)
     options=[g for g,members in groups.items() if len(members)>=2]
     if not options:
-        st.error('请在 Properties 中新增 Report Group，并为同一 LLC 的两个或以上物业填写相同组名。')
+        st.error('没有找到 Property Name / LLC 相同且至少包含两个物业的 LLC。')
         st.stop()
-    group=st.selectbox('LLC / Report Group',options)
+    group=st.selectbox('LLC (Property Name / LLC)',options)
     month_combined=st.text_input('Reporting Month (YYYY-MM)',value=datetime.now().strftime('%Y-%m'),key='combined_month')
     st.caption('Included properties: '+', '.join(str(p.get('Property Address') or p.get('Property ID')) for p in groups[group]))
     st.info('先在 Single Property Report 分别保存每个物业当月 AppFolio 运营数据；LLC 现金、Reserve 和 Distribution 仅在 LLC Monthly 工作表填写一次。')
@@ -133,7 +135,7 @@ if report_type=='Combined LLC Report':
         st.error('Google Sheets 需要增加 LLCs 和 LLC Monthly 两个工作表；具体表头见 ZIP 中的 README。')
         st.stop()
     try:
-        model=build_model(group,month_combined,props,sheet_monthly,records(data.get('LLC Monthly')),summaries,records(data.get('LLCs')))
+        model=build_model(group,month_combined,[{**item, 'Report Group': str(item.get('Property Name / LLC','') or '').strip()} for item in props],sheet_monthly,records(data.get('LLC Monthly')),summaries,records(data.get('LLCs')))
     except Exception as e:
         st.error(f'无法生成合并报告：{e}')
         st.stop()
@@ -147,18 +149,40 @@ if report_type=='Combined LLC Report':
     if model['shortfall']>0:st.warning('LLC 存在 Reserve Shortfall，请先审核分红。')
     st.subheader('Optional · AppFolio Original PDF Appendices')
     uploads=st.file_uploader('上传各物业原始 Income Statement / Rent Roll PDF（可多选）',type=['pdf'],accept_multiple_files=True,key='llc_appendices')
+    combined_artifacts=[]
     for language,cn in [('中文',True),('English',False)]:
         try:
             doc=make_combined_docx(model,cn)
             stem=f"Moo_{re.sub(r'[^A-Za-z0-9]+','_',group)}_{month_combined}_{'CN' if cn else 'EN'}_Combined"
             col1,col2=st.columns(2)
             col1.download_button(f'{language} · Download Combined Word',doc,stem+'.docx',mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',key='llc_doc'+language)
+            combined_artifacts.append((stem+'.docx',doc,'application/vnd.openxmlformats-officedocument.wordprocessingml.document'))
             try:
                 pdf=make_combined_pdf(doc)
-                if uploads:pdf=append_pdf_documents(pdf,[(f.name,f.getvalue()) for f in uploads])
+                if uploads:
+                    attachments=[]
+                    for f in uploads:
+                        if 'rent' in f.name.lower() and 'roll' in f.name.lower():
+                            try:
+                                payload=translate_rent_roll(f.getvalue(),group,month_combined) if cn else corrected_rent_roll(f.getvalue(),group,month_combined)
+                                attachments.append((f.name,payload))
+                            except Exception as exc:
+                                st.warning(f'{f.name} 无法转换 Rent Roll，已保留原件：{exc}')
+                                attachments.append((f.name,f.getvalue()))
+                        elif cn and 'income' in f.name.lower():
+                            attachments.append((f.name,translate_income(f.getvalue(),group,month_combined)))
+                        else:attachments.append((f.name,f.getvalue()))
+                    pdf=append_pdf_documents(pdf,attachments)
                 col2.download_button(f'{language} · Download Combined PDF',pdf,stem+'.pdf',mime='application/pdf',key='llc_pdf'+language)
+                combined_artifacts.append((stem+'.pdf',pdf,'application/pdf'))
             except Exception as e:st.info(f'{language} PDF 暂不可用：{e}')
         except Exception as e:st.error(f'{language} Word 生成失败：{e}')
+    if combined_artifacts and st.button('☁️ Save Combined Reports to Google Drive',key='save_combined_drive'):
+        try:
+            result=save_reports(st.secrets,group,month_combined[:4],combined_artifacts)
+            st.success(f"已保存 {len(result['files'])} 个文件到 Google Drive")
+            st.link_button('Open LLC Reports Folder',result['folder_url'])
+        except Exception as e:st.error(f'Google Drive 保存失败：{e}')
     st.stop()
 selected=st.selectbox('Property',list(pmap),format_func=lambda k:f"{pmap[k].get('Property Name / LLC',k)} ({k})")
 p=pmap[selected]
@@ -313,6 +337,7 @@ if not income_file or not rent_file:st.info('未同时上传两份 AppFolio PDF 
 if period_mismatch:st.error('报表月份不一致：请先修改 Reporting Month，下载功能已停用。')
 lang=str(p.get('Report Language','English')).strip().lower()
 languages=['中文','English'] if lang in ('both','bilingual','中英文') else (['中文'] if lang in ('中文','chinese','cn') else ['English'])
+report_artifacts=[]
 for language in languages:
     cn=language=='中文';stem=f"Moo_{selected}_{month}_{'CN' if cn else 'EN'}"
     try:
@@ -333,15 +358,28 @@ for language in languages:
                         translated.append(('物业出租及入住情况表.pdf',translate_rent_roll(rent_file.getvalue(),property_name,month)))
                     pdf=append_pdf_documents(pdf,translated)
                 else:
-                    pdf=append_pdf_documents(pdf,[(f.name,f.getvalue()) for f in appendix_files])
+                    english_docs=[]
+                    if income_file: english_docs.append((income_file.name,income_file.getvalue()))
+                    if rent_file:
+                        english_docs.append(('Corrected_English_Rent_Roll.pdf',corrected_rent_roll(rent_file.getvalue(),str(p.get('Property Name / LLC','')),month)))
+                    pdf=append_pdf_documents(pdf,english_docs)
         except Exception as pdf_error:
             pdf=None
             st.info(f'Word report ready. PDF unavailable: {pdf_error}')
         left,right=st.columns(2)
         left.download_button(f'{language} · Download Word',d,stem+'.docx',mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',key='doc'+language)
+        report_artifacts.append((stem+'.docx',d,'application/vnd.openxmlformats-officedocument.wordprocessingml.document'))
         if pdf is not None:
             right.download_button(f"{language} · Download PDF + Appendix",pdf,stem+".pdf",mime="application/pdf",key="pdf"+language)
+            report_artifacts.append((stem+".pdf",pdf,"application/pdf"))
     except Exception as e:st.error(f'{language} 报告生成失败：{e}')
+if report_artifacts and not period_mismatch:
+    if st.button('☁️ Save Reports to Google Drive',key='save_single_drive'):
+        try:
+            result=save_reports(st.secrets,str(p.get('Property Name / LLC') or selected),month[:4],report_artifacts)
+            st.success(f"已保存 {len(result['files'])} 个文件到 Google Drive")
+            st.link_button('Open LLC Reports Folder',result['folder_url'])
+        except Exception as e:st.error(f'Google Drive 保存失败：{e}')
 st.subheader('5 · 历史月度记录')
 if rows:st.dataframe(pd.DataFrame([x for x in rows if x['Property ID']==selected]).sort_values('Month (YYYY-MM)'),hide_index=True,use_container_width=True)
 st.caption('内部管理工具。系统不自动付款、不自动发送邮件；现金余额为推算值，确认分红前仍需审核应付款项和实际分红流水。')
