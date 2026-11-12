@@ -93,7 +93,8 @@ p{margin:0 0 16px}ul{margin:0 0 16px;padding-left:25px}li{margin:3px 0}strong{fo
 
 def show_communications(name, month, operation_cn, cash_cn, notes_cn='',
                         operation_en='', cash_en='', notes_en='', key='communication',
-                        email_override_en=None, email_override_cn=None):
+                        email_override_en=None, email_override_cn=None,
+                        report_row=None, previous_row=None):
     st.subheader('Investor Communication · 邮件草稿 / 微信通知')
     st.caption('仅生成可复制的草稿，不会自动发送。发送前请核对金额及附件。')
     language = st.radio('通知语言', ['中文', 'English'], horizontal=True, key=key+'_language')
