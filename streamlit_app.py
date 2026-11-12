@@ -190,7 +190,7 @@ if report_type=='Combined LLC Report':
     op_en, cash_en = generated_summary(model, False)
     show_communications(group, month_combined, op_cn, cash_cn, model.get('summary_cn',''),
                         op_en, cash_en, model.get('summary_en',''),
-                        key='llc_'+re.sub(r'[^a-zA-Z0-9]', '_', group))
+                        key='llc_'+re.sub(r'[^a-zA-Z0-9]', '_', group), combined_model=model)
     st.stop()
 selected=st.selectbox('Property',list(pmap),format_func=lambda k:f"{pmap[k].get('Property Name / LLC',k)} ({k})")
 p=pmap[selected]
@@ -432,7 +432,8 @@ op_cn, cash_cn, note_cn = _single_summary_preview(r, prior_row, True)
 op_en, cash_en, note_en = _single_summary_preview(r, prior_row, False)
 show_communications(str(p.get('Property Name / LLC') or selected), month,
                     op_cn, cash_cn, note_cn, op_en, cash_en, note_en,
-                    key='single_'+re.sub(r'[^a-zA-Z0-9]', '_', selected))
+                    key='single_'+re.sub(r'[^a-zA-Z0-9]', '_', selected),
+                     report_row=r, previous_row=prior_row)
 
 st.subheader('5 · 历史月度记录')
 if rows:st.dataframe(pd.DataFrame([x for x in rows if x['Property ID']==selected]).sort_values('Month (YYYY-MM)'),hide_index=True,use_container_width=True)
