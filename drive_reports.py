@@ -4,6 +4,7 @@ import re
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
+from googleapiclient.errors import HttpError
 
 ROOT_FOLDER_ID = '178_BBqTmyIp-jFi8PljmhS2CQ_YeAp90'
 SCOPES = ['https://www.googleapis.com/auth/drive']
@@ -35,7 +36,19 @@ def _folder(service, parent, name):
 def save_reports(secrets, llc_name, year, artifacts):
     """artifacts: iterable of (filename, bytes, MIME type); update same-name files."""
     service = _service(secrets)
-    root = service.files().get(fileId=ROOT_FOLDER_ID, fields='id,name,mimeType,webViewLink,capabilities(canAddChildren)', supportsAllDrives=True).execute()
+    try:
+        root = service.files().get(fileId=ROOT_FOLDER_ID, fields='id,name,mimeType,webViewLink,capabilities(canAddChildren)', supportsAllDrives=True).execute()
+    except HttpError as exc:
+        if exc.resp.status == 404:
+            email = dict(secrets['GOOGLE_APPLICATION_CREDENTIALS']).get('client_email', '(unknown)')
+            raise PermissionError(
+                f'Google Drive root folder is not visible to service account {email}. '
+                f'Open https://drive.google.com/drive/folders/{ROOT_FOLDER_ID}, '
+                'share this folder with that service-account email as Editor, '
+                'or ask the Shared Drive administrator to grant access. '
+                'A Drive API 404 can mean missing permissions, not a missing folder.'
+            ) from exc
+        raise
     if root.get('mimeType') != 'application/vnd.google-apps.folder':
         raise ValueError('Configured Drive root is not a folder.')
     if not root.get('capabilities', {}).get('canAddChildren', False):
