@@ -1,6 +1,9 @@
 """Investor communication drafts; no emails or WeChat messages are sent."""
 import re
+import html
+import json
 import streamlit as st
+import streamlit.components.v1 as components
 
 
 def money(value):
@@ -52,155 +55,78 @@ def drafts(name, month, operation, cash, notes='', cn=True):
     return subject, email, wechat
 
 
+def plain_text(value):
+    """Remove Markdown emphasis markers from copyable email/WeChat drafts."""
+    value = str(value or '')
+    value = value.replace('\\*', '*').replace('\\-', '-')
+    value = re.sub(r'(?<!\w)\*{1,3}(?=\S)|(?<=\S)\*{1,3}(?!\w)', '', value)
+    return value
 
-def _numeric(row, *keys):
-    for key in keys:
-        value = (row or {}).get(key)
-        if value is None or str(value).strip() == '':
+
+def formatted_email_html(value):
+    """Safe, Gmail-friendly HTML from the report's plain/Markdown-like draft."""
+    source = str(value or '').replace('\\*', '*').replace('\\-', '-')
+    blocks = []
+    headings = {'Operations', 'Rental Income', 'Financial Performance',
+                'Cash Position & Distribution Update', 'Additional Operating Updates'}
+    for block in re.split(r'\n\s*\n', source.strip()):
+        lines = [line.strip() for line in block.splitlines() if line.strip()]
+        if not lines:
             continue
-        try:
-            return float(str(value).replace(',', '').replace('$', '').replace('%', ''))
-        except (ValueError, TypeError):
-            pass
-    return None
-
-
-def _formatted_month(month):
-    from datetime import datetime
-    try:
-        return datetime.strptime(str(month), '%Y-%m').strftime('%B %Y')
-    except ValueError:
-        return str(month)
-
-
-def _percent(value):
-    return value * 100 if value is not None and abs(value) <= 1 else value
-
-
-def _money_or_na(value):
-    return money(value) if value is not None else 'Not available'
-
-
-def english_email(name, month, row=None, previous=None, notes='', model=None):
-    """Data-grounded investor email; no claims about leasing, payments or renewals without notes."""
-    label = _formatted_month(month)
-    notes = str(notes or '').strip()
-    if model is not None:
-        properties = model.get('properties') or []
-        op_lines = []
-        for prop in properties:
-            prop_name = str(prop.get('name') or prop.get('property') or 'Property')
-            occ = _percent(_numeric(prop, 'occupancy'))
-            prior = _percent(_numeric(prop, 'prior_occupancy'))
-            description = f'{prop_name}: occupancy was {occ:.1f}%' if occ is not None else f'{prop_name}: occupancy data is unavailable'
-            if prior is not None and occ is not None:
-                description += f' versus {prior:.1f}% in the previous month'
-            op_lines.append(description + '.')
-        operations = '\n'.join(op_lines) if op_lines else 'Operating information is provided in the attached report.'
-        rental_lines = []
-        for prop in properties:
-            rent = _numeric(prop, 'rent', 'Rent Income')
-            if rent is not None:
-                rental_lines.append(f"{prop.get('name') or 'Property'}: {_money_or_na(rent)} in rental income.")
-        rental = '\n'.join(rental_lines) if rental_lines else 'Please see the attached report for rental income details.'
-        total_income = sum(_numeric(p, 'income') or 0 for p in properties) if properties else None
-        expenses = sum(_numeric(p, 'expenses') or 0 for p in properties) if properties else None
-        noi = sum(_numeric(p, 'noi') or 0 for p in properties) if properties else None
-        utility = sum(_numeric(p, 'utility_income', 'Utility Income') or 0 for p in properties) if properties and all(_numeric(p, 'utility_income', 'Utility Income') is not None for p in properties) else None
-        beginning = _numeric(model, 'beginning', 'beginning_cash', 'Beginning Cash')
-        ending = _numeric(model, 'ending', 'ending_cash', 'Ending Cash')
-        reserve = _numeric(model, 'reserve', 'required_reserve', 'Required Reserve')
-        available = _numeric(model, 'available', 'Available to Distribute')
-        shortfall = _numeric(model, 'shortfall', 'Reserve Shortfall')
-        reserve_addition = _numeric(model, 'reserve_addition', 'Monthly Reserve Addition')
-    else:
-        row = row or {}
-        previous = previous or {}
-        occ = _percent(_numeric(row, 'Occupancy'))
-        prior_occ = _percent(_numeric(previous, 'Occupancy'))
-        if occ is None:
-            operations = 'Occupancy information is not available for this month.'
-        elif prior_occ is None:
-            operations = f'The property reported {occ:.1f}% occupancy in {label}.'
+        clean = lambda x: re.sub(r'\*{1,3}', '', x).strip()
+        if len(lines) == 1 and clean(lines[0]) in headings:
+            blocks.append(f'<p style="margin:18px 0 8px"><strong>{html.escape(clean(lines[0]))}</strong></p>')
+        elif all(re.match(r'^[-*]\s+', line) for line in lines):
+            items = []
+            for line in lines:
+                text = clean(re.sub(r'^[-*]\s+', '', line))
+                if ':' in text:
+                    title, rest = text.split(':', 1)
+                    content = f'<strong>{html.escape(title)}:</strong>{html.escape(rest)}'
+                else:
+                    content = html.escape(text)
+                items.append(f'<li style="margin:3px 0">{content}</li>')
+            blocks.append('<ul style="padding-left:24px;margin:8px 0 16px">'+''.join(items)+'</ul>')
         else:
-            change = occ - prior_occ
-            direction = 'remained consistent with' if abs(change) < 0.05 else ('increased from' if change > 0 else 'decreased from')
-            operations = (f'The property maintained {occ:.1f}% occupancy in {label}, consistent with the prior month.'
-                          if abs(change) < 0.05 else
-                          f'The property\'s occupancy {direction} {prior_occ:.1f}% to {occ:.1f}% in {label}.')
-        total_rooms = _numeric(row, 'Total Rooms')
-        occupied = _numeric(row, 'Occupied Rooms')
-        if total_rooms is not None and occupied is not None:
-            vacant = max(0, int(round(total_rooms - occupied)))
-            operations += f' {vacant} room' + (' was' if vacant == 1 else 's were') + ' vacant at month-end.'
-        rent = _numeric(row, 'Rent Income')
-        prior_rent = _numeric(previous, 'Rent Income')
-        if rent is None:
-            rental = 'Rental income information is not available for this month.'
-        elif prior_rent is None:
-            rental = f'Rental income for {label} was {money(rent)}.'
-        else:
-            rental = f'Rental income was {money(rent)} in {label}, compared with {money(prior_rent)} in the previous month.'
-        ar = _numeric(row, 'Outstanding Rent Receivable')
-        if ar is not None:
-            rental += (' There was no outstanding rent receivable at month-end.' if abs(ar) < 0.005
-                       else f' Outstanding rent receivable at month-end was {money(ar)}.')
-        total_income = _numeric(row, 'Income', 'Total Income')
-        utility = _numeric(row, 'Utility Income')
-        expenses = _numeric(row, 'Expenses', 'Operating Expenses')
-        noi = _numeric(row, 'NOI')
-        reserve_addition = _numeric(row, 'Monthly Reserve Addition')
-        beginning = _numeric(row, 'Beginning Cash')
-        ending = _numeric(row, 'Ending Cash')
-        reserve = _numeric(row, 'Required Reserve')
-        available = _numeric(row, 'Available to Distribute')
-        shortfall = _numeric(row, 'Reserve Shortfall')
-    financial = '\n'.join([
-        f'- **Total Income:** {_money_or_na(total_income)}',
-        f'- **Utilities Income:** {_money_or_na(utility)}',
-        f'- **Operating Expenses:** {_money_or_na(expenses)}',
-        f'- **Net Operating Income (NOI):** **{_money_or_na(noi)}**',
-        f'- **Reserve Contribution:** {_money_or_na(reserve_addition)}',
-    ])
-    cash_lines = [
-        f'- **Total Balance Last Month:** {_money_or_na(beginning)}',
-        f'- **Total Balance This Month:** {_money_or_na(ending)}',
-        f'- **Total Required Reserve:** {_money_or_na(reserve)}',
-        f'- **Available Cash for Distribution Review:** {_money_or_na(available)}',
-    ]
-    if shortfall is not None and shortfall > 0.005:
-        cash_lines.append(f'- **Reserve Shortfall:** {money(shortfall)}')
-        conclusion = ('The current cash balance is below the required reserve. '
-                      'No cash is available for investor distribution review this month; '
-                      'funds will remain in the property account to support reserves and ongoing operations.')
-    elif available is not None and available > 0.005:
-        conclusion = (f'Available cash for distribution review at month-end was {money(available)}. '
-                      'Any distribution remains subject to management approval and verification of outstanding obligations.')
-    elif available is not None:
-        conclusion = 'No cash is available for investor distribution review this month.'
-    else:
-        conclusion = 'Distribution availability has not been determined from the supplied records.'
-    parts = [
-        'Dear Investors,',
-        f'Please find below the key highlights for **{label}**:',
-        '**Operations**', operations,
-        '**Rental Income**', rental,
-        '**Financial Performance**', financial,
-        '**Cash Position & Distribution Update**', '\n'.join(cash_lines), conclusion,
-    ]
-    if notes:
-        parts.extend(['**Additional Operating Updates**', notes])
-    parts.extend([
-        'We will continue to monitor rental income, operating expenses, and the property’s cash position.',
-        'Please refer to the attached monthly report for detailed financial statements, reserve information, and the updated rent roll.',
-        'Please feel free to reach out with any questions.',
-        'Moo Housing',
-    ])
-    return f'{name} | Investor Report | {label}', '\n\n'.join(parts)
+            content = '<br>'.join(html.escape(clean(line)) for line in lines)
+            blocks.append(f'<p style="margin:0 0 13px">{content}</p>')
+    return '<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.55;color:#222">'+''.join(blocks)+'</div>'
+
+
+def formatted_copy_widget(body, plain):
+    """Rich clipboard on user click; selectable rich-text fallback for blocked clipboard."""
+    rich = formatted_email_html(body)
+    # Escape closing script in JSON, even if future user notes contain markup.
+    rich_js = json.dumps(rich).replace('<', '\\u003c')
+    plain_js = json.dumps(plain).replace('<', '\\u003c')
+    page = f"""<!doctype html><html><head><meta charset='utf-8'></head><body style='margin:0;font-family:Arial,sans-serif'>
+    <button id='copy' style='padding:9px 15px;background:#165dba;color:white;border:0;border-radius:6px;cursor:pointer'>Copy Formatted Email</button>
+    <span id='status' role='status' style='margin-left:10px;font-size:12px'></span>
+    <div id='mail' contenteditable='true' aria-label='Formatted email; select all to copy' style='margin-top:12px;padding:15px;border:1px solid #ddd;border-radius:6px;min-height:140px'></div>
+    <script>
+    const rich={rich_js};const plain={plain_js};
+    const mail=document.getElementById('mail');mail.innerHTML=rich;
+    document.getElementById('copy').addEventListener('click',async()=>{{
+      const status=document.getElementById('status');
+      try {{
+        if (!navigator.clipboard || !window.ClipboardItem) throw Error('Clipboard API unavailable');
+        await navigator.clipboard.write([new ClipboardItem({{
+          'text/html':new Blob([rich],{{type:'text/html'}}),
+          'text/plain':new Blob([plain],{{type:'text/plain'}})
+        }})]);
+        status.textContent='Copied with formatting. Paste into Gmail.';
+      }} catch(err) {{
+        const range=document.createRange();range.selectNodeContents(mail);
+        const selection=window.getSelection();selection.removeAllRanges();selection.addRange(range);
+        status.textContent='Clipboard blocked. Press Ctrl+C (Mac: Cmd+C), then paste into Gmail.';
+      }}
+    }});
+    </script></body></html>"""
+    components.html(page, height=430, scrolling=True)
+
 
 def show_communications(name, month, operation_cn, cash_cn, notes_cn='',
-                        operation_en='', cash_en='', notes_en='', key='communication',
-                        report_row=None, previous_row=None, combined_model=None):
+                        operation_en='', cash_en='', notes_en='', key='communication'):
     st.subheader('Investor Communication · 邮件草稿 / 微信通知')
     st.caption('仅生成可复制的草稿，不会自动发送。请先下载报告，并在发送前核对收件人、金额及附件。')
     language = st.radio('通知语言', ['中文', 'English'], horizontal=True, key=key+'_language')
@@ -209,15 +135,17 @@ def show_communications(name, month, operation_cn, cash_cn, notes_cn='',
                                    operation_cn if cn else operation_en,
                                    cash_cn if cn else cash_en,
                                    notes_cn if cn else notes_en, cn=cn)
-    if not cn and (report_row is not None or combined_model is not None):
-        subject, email = english_email(name, month, row=report_row, previous=previous_row,
-                                       notes=notes_en, model=combined_model)
+    email = plain_text(email)
+    wechat = plain_text(wechat)
     email_tab, wechat_tab = st.tabs(['Email Draft · 邮件草稿', 'WeChat · 微信通知'])
     with email_tab:
         st.markdown('**Subject / 邮件标题**（右上角复制图标）')
         st.code(subject, language=None)
         st.markdown('**Email Body / 邮件正文**（右上角复制图标）')
+        formatted_copy_widget(email, email)
+        st.markdown('**Copy Plain Text**（右上角复制图标）')
         st.code(email, language=None)
+        st.download_button('下载带格式邮件 .html', ('<!doctype html><html><meta charset=\"utf-8\"><body>'+formatted_email_html(email)+'</body></html>').encode('utf-8'), file_name=f'Moo_Email_{key}.html', mime='text/html', key=key+'_email_html')
         st.download_button('下载邮件草稿 .txt', f'Subject: {subject}\n\n{email}'.encode('utf-8'),
                            file_name=f'Moo_Email_{key}.txt', mime='text/plain', key=key+'_email_txt')
         st.info('邮件附件需手动添加本页生成的 Word 或 PDF。此功能不会直接发送邮件。')
