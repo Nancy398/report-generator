@@ -54,7 +54,10 @@ def _base(title,property_name,period,land=False):
 
 def _table(story,rows,widths,small,headers=True):
     if not rows:return
-    data=[[_p(c,small) for c in row] for row in rows]
+    # Paragraph textColor overrides TableStyle TEXTCOLOR, so use a white
+    # ParagraphStyle explicitly for header cells.
+    header_style=ParagraphStyle('table_header_white',parent=small,textColor=colors.white)
+    data=[[_p(c,header_style if headers and i==0 else small) for c in row] for i,row in enumerate(rows)]
     table=Table(data,colWidths=widths,repeatRows=1 if headers else 0,hAlign='LEFT')
     cmds=[('VALIGN',(0,0),(-1,-1),'TOP'),('LEFTPADDING',(0,0),(-1,-1),6),('RIGHTPADDING',(0,0),(-1,-1),6),('TOPPADDING',(0,0),(-1,-1),5),('BOTTOMPADDING',(0,0),(-1,-1),5),('LINEBELOW',(0,0),(-1,0),.7,colors.HexColor('#d5e0e9'))]
     if headers:cmds.extend([('BACKGROUND',(0,0),(-1,0),colors.HexColor('#17334f')),('TEXTCOLOR',(0,0),(-1,0),colors.white)])
