@@ -1,6 +1,7 @@
 """Moo Housing Investor Reporting: AppFolio + Google Sheets + reserves + reports."""
 import io,re,sqlite3,json
 from datetime import datetime,timezone
+import calendar
 from pathlib import Path
 import pandas as pd
 import streamlit as st
@@ -391,7 +392,10 @@ for language in languages:
         if period_mismatch:continue
         appendix_documents=[]
         if income_file: appendix_documents.append(('AppFolio Income Statement', month))
-        if rent_file: appendix_documents.append(('AppFolio Rent Roll', 'As of '+(month+' month-end')))
+        if rent_file:
+            last_day = calendar.monthrange(report_year, report_month)[1]
+            as_of_date = datetime(report_year, report_month, last_day).strftime('%B %d, %Y')
+            appendix_documents.append(('AppFolio Rent Roll', 'As of ' + as_of_date))
         d=make_docx(r,p,cn,previous=prior_row,appendix_documents=appendix_documents)
         try:
             pdf=make_pdf(r,p,cn,previous=prior_row,appendix_documents=appendix_documents)
