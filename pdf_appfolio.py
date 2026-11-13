@@ -79,20 +79,20 @@ def _normalize_unit(value):
 
 
 def _lease_scope(unit):
-    """Return the exact address scope and optional FFL floor of a parent lease.
-
-    Examples:
-      '1332 1/2 W 35th Pl - 1332 1/2 W 35th Pl' -> entire address
-      '1332 1/2 W 35th Pl - 1332 1/2 W 35th Pl FFL 2' -> floor 2
-    """
+    """Recognize whole-address and floor-specific parent leases without mixing addresses."""
     if ' - ' not in unit:
         return None
-    address, target = (_normalize_unit(part) for part in unit.split(' - ', 1))
-    if target == address:
-        return address, None
-    m = re.fullmatch(re.escape(address) + r'\s+ffl\s*(\w+)', target, re.I)
-    if m:
-        return address, m.group(1).casefold()
+    left, right = (_normalize_unit(part) for part in unit.split(' - ', 1))
+    left_address, left_floor = _room_scope(left)
+    right_address, right_floor = _room_scope(right)
+    if left_address != right_address:
+        return None
+    # A repeated floor-specific name is a floor lease, not an address-wide lease.
+    if left == right:
+        return (left_address, left_floor)
+    # An address-wide left side can explicitly name a floor on the right.
+    if left_floor is None and right_floor is not None:
+        return (left_address, right_floor)
     return None
 
 
