@@ -73,12 +73,44 @@ def parse_income_pdf(data):
     found['period']=period
     return found
 
-def rent_roll_details(data):
-    """Room-level occupancy with whole-unit leases inherited by child rooms.
+def _normalize_unit(value):
+    """Normalize spacing/case without merging distinct fractional street addresses."""
+    return re.sub(r'\s+', ' ', str(value or '').strip()).casefold()
 
-    A parent lease is recognized only when its unit name is repeated after ' - '
-    and it has an occupied/notice status. Parent rent is never counted again
-    as a room's rent. A Vacant-Rented room is not currently occupied.
+
+def _lease_scope(unit):
+    """Return the exact address scope and optional FFL floor of a parent lease.
+
+    Examples:
+      '1332 1/2 W 35th Pl - 1332 1/2 W 35th Pl' -> entire address
+      '1332 1/2 W 35th Pl - 1332 1/2 W 35th Pl FFL 2' -> floor 2
+    """
+    if ' - ' not in unit:
+        return None
+    address, target = (_normalize_unit(part) for part in unit.split(' - ', 1))
+    if target == address:
+        return address, None
+    m = re.fullmatch(re.escape(address) + r'\s+ffl\s*(\w+)', target, re.I)
+    if m:
+        return address, m.group(1).casefold()
+    return None
+
+
+def _room_scope(base):
+    base = _normalize_unit(base)
+    match = re.fullmatch(r'(.+?)\s+ffl\s*(\w+)', base, re.I)
+    if match:
+        return match.group(1), match.group(2).casefold()
+    return base, None
+
+
+def rent_roll_details(data):
+    """Count physical rooms, inheriting occupied whole-address/floor leases.
+
+    Exact floor parents take precedence over address-wide parents. A vacant
+    floor parent does not cancel an occupied address-wide lease, but an
+    occupied floor parent never covers another floor. Parent rent is never
+    copied into child-room rent.
     """
     lines = _lines(data)
     parents = {}
@@ -111,29 +143,35 @@ def rent_roll_details(data):
             'lease_to': column_text(650, 705), 'move_in': column_text(705, 800),
         }
         base, suffix = unit.rsplit(' - ', 1)
-        key = base.strip().casefold()
         if re.fullmatch(r'(?:Rm|Room|Bed)\s*[-#]?\s*\w+', suffix.strip(), re.I):
-            if unit in seen:
+            key = _normalize_unit(unit)
+            if key in seen:
                 raise ValueError('Duplicate room record: ' + unit)
-            seen.add(unit)
-            record['base'] = key
+            seen.add(key)
+            record['base'] = _normalize_unit(base)
             rooms.append(record)
-        elif suffix.strip().casefold() == key:
-            # Whole-unit lease: parent is occupied for Current/Notice statuses.
-            parents[key] = record
+        else:
+            scope = _lease_scope(unit)
+            if scope:
+                if scope in parents and parents[scope]['status'].casefold() != status.casefold():
+                    raise ValueError('Conflicting whole-unit lease statuses for: ' + unit)
+                parents[scope] = record
     if not rooms:
         raise ValueError('No room records detected in Rent Roll PDF.')
     for room in rooms:
-        parent = parents.get(room['base'])
-        inherited = bool(parent and not parent['status'].lower().startswith('vacant'))
-        direct = not room['status'].lower().startswith('vacant')
+        address, floor = _room_scope(room['base'])
+        candidates = []
+        if floor is not None:
+            candidates.append(parents.get((address, floor)))
+        candidates.append(parents.get((address, None)))
+        parent = next((p for p in candidates if p and p['status'].casefold() in ('current', 'notice-unrented', 'notice-rented')), None)
+        inherited = parent is not None
+        direct = room['status'].casefold() in ('current', 'notice-unrented', 'notice-rented')
         room['occupied'] = direct or inherited
         room['whole_unit_lease'] = inherited
         if inherited and not direct:
             room['display_status'] = '整租已出租'
             room['display_tenant'] = parent['tenant'] or '整租租客'
-            # Parent lease terms are valid for child rooms, but parent rent is
-            # not apportioned or duplicated across rooms.
             for field in ('lease_from', 'lease_to', 'move_in'):
                 if not room[field]:
                     room[field] = parent[field]
