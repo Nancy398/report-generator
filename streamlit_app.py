@@ -14,6 +14,7 @@ from investor_communication import show_communications
 
 st.set_page_config(page_title='Moo Housing | Investor Report Generator',layout='wide')
 st.title('MOO HOUSING · Investor Report Generator')
+st.caption('Version: Chapter-Based Combined Report V3')
 st.caption('AppFolio PDF → NOI / Occupancy → Cash & Reserve → Word / PDF with original PDF appendices')
 HERE=Path(__file__).parent
 SHEETS=['Properties','Monthly Statements','Investors','Distribution History','Summaries','LLCs','LLC Monthly']
@@ -92,8 +93,8 @@ def store_local(rec):
 def local_records():
     with local_db() as c:return [json.loads(r[0]) for r in c.execute('SELECT payload FROM statements')]
 
-report_workflow = st.radio('Report Workflow', ['Single Property Report / Saved Data', 'Upload & Generate Combined Report'], horizontal=True, key='report_workflow')
-if report_workflow == 'Upload & Generate Combined Report':
+report_workflow = st.radio('Report Workflow', ['Single Property Report', 'Combined LLC Report · By Chapter'], horizontal=True, key='report_workflow')
+if report_workflow == 'Combined LLC Report · By Chapter':
     from combined_workflow import show_combined_upload_workflow
     show_combined_upload_workflow(google_load, records, store_google, save_reports)
     st.stop()
@@ -122,80 +123,7 @@ props=records(data['Properties']);sheet_monthly=records(data['Monthly Statements
 if not props:st.error('Properties 没有物业信息');st.stop()
 pmap={pid(p.get('Property ID')):p for p in props if pid(p.get('Property ID'))}
 if not pmap:st.stop()
-report_type=st.radio('Report Type',['Single Property Report','Combined LLC Report'],horizontal=True)
-if report_type=='Combined LLC Report':
-    from combined_llc import build_model,make_combined_docx,make_combined_pdf
-    from reporting import append_pdf_documents
-    groups={}
-    for prop in props:
-        group=str(prop.get('Property Name / LLC','') or '').strip()
-        if group:groups.setdefault(group,[]).append(prop)
-    options=[g for g,members in groups.items() if len(members)>=2]
-    if not options:
-        st.error('没有找到 Property Name / LLC 相同且至少包含两个物业的 LLC。')
-        st.stop()
-    group=st.selectbox('LLC (Property Name / LLC)',options)
-    month_combined=st.text_input('Reporting Month (YYYY-MM)',value=datetime.now().strftime('%Y-%m'),key='combined_month')
-    st.caption('Included properties: '+', '.join(str(p.get('Property Address') or p.get('Property ID')) for p in groups[group]))
-    st.info('直接使用现有 Properties 和 Monthly Statements 生成合并报告，无需 LLCs 或 LLC Monthly 工作表。请先确保各物业当月数据已保存。')
-    st.caption('注意：现金和 Reserve 按物业记录合计。若多个物业记录的是同一银行账户余额，请先修正重复记录，否则合并现金会被高估。')
-    try:
-        model=build_model(group,month_combined,props,sheet_monthly,summaries)
-    except Exception as e:
-        st.error(f'无法生成合并报告：{e}')
-        st.stop()
-    st.subheader('Combined Executive Summary')
-    st.dataframe(pd.DataFrame(model['properties'])[['name','occupancy','prior_occupancy','noi','rent','income','expenses']],hide_index=True,use_container_width=True)
-    c1,c2,c3=st.columns(3)
-    c1.metric('LLC Available Cash',f"${model['available']:,.2f}")
-    c2.metric('LLC Distribution Paid',f"${model['distribution']:,.2f}")
-    c3.metric('LLC Reserve Shortfall',f"${model['shortfall']:,.2f}")
-    st.caption('可分配余额 = max(0, LLC Ending Cash − LLC Required Reserve)；季度余额为期末累计余额，不叠加各月余额。')
-    if model['shortfall']>0:st.warning('LLC 存在 Reserve Shortfall，请先审核分红。')
-    st.subheader('Optional · AppFolio Original PDF Appendices')
-    uploads=st.file_uploader('上传各物业原始 Income Statement / Rent Roll PDF（可多选）',type=['pdf'],accept_multiple_files=True,key='llc_appendices')
-    combined_artifacts=[]
-    for language,cn in [('中文',True),('English',False)]:
-        try:
-            doc=make_combined_docx(model,cn)
-            stem=f"Moo_{re.sub(r'[^A-Za-z0-9]+','_',group)}_{month_combined}_{'CN' if cn else 'EN'}_Combined"
-            col1,col2=st.columns(2)
-            col1.download_button(f'{language} · Download Combined Word',doc,stem+'.docx',mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',key='llc_doc'+language)
-            combined_artifacts.append((stem+'.docx',doc,'application/vnd.openxmlformats-officedocument.wordprocessingml.document'))
-            try:
-                pdf=make_combined_pdf(doc)
-                if uploads:
-                    attachments=[]
-                    for f in uploads:
-                        if 'rent' in f.name.lower() and 'roll' in f.name.lower():
-                            try:
-                                payload=translate_rent_roll(f.getvalue(),group,month_combined) if cn else corrected_rent_roll(f.getvalue(),group,month_combined)
-                                attachments.append((f.name,payload))
-                            except Exception as exc:
-                                st.warning(f'{f.name} 无法转换 Rent Roll，已保留原件：{exc}')
-                                attachments.append((f.name,f.getvalue()))
-                        elif cn and 'income' in f.name.lower():
-                            attachments.append((f.name,translate_income(f.getvalue(),group,month_combined)))
-                        else:attachments.append((f.name,f.getvalue()))
-                    pdf=append_pdf_documents(pdf,attachments)
-                col2.download_button(f'{language} · Download Combined PDF',pdf,stem+'.pdf',mime='application/pdf',key='llc_pdf'+language)
-                combined_artifacts.append((stem+'.pdf',pdf,'application/pdf'))
-            except Exception as e:st.info(f'{language} PDF 暂不可用：{e}')
-        except Exception as e:st.error(f'{language} Word 生成失败：{e}')
-    if combined_artifacts and st.button('☁️ Save Combined Reports to Google Drive',key='save_combined_drive'):
-        try:
-            result=save_reports(st.secrets,group,month_combined[:4],combined_artifacts)
-            st.success(f"已保存 {len(result['files'])} 个文件到 Google Drive")
-            st.link_button('Open LLC Reports Folder',result['folder_url'])
-        except Exception as e:st.error(f'Google Drive 保存失败：{e}')
-    # Restore bilingual investor email and WeChat drafts (no automatic sending).
-    from combined_llc import generated_summary
-    op_cn, cash_cn = generated_summary(model, True)
-    op_en, cash_en = generated_summary(model, False)
-    show_communications(group, month_combined, op_cn, cash_cn, model.get('summary_cn',''),
-                        op_en, cash_en, model.get('summary_en',''),
-                        key='llc_'+re.sub(r'[^a-zA-Z0-9]', '_', group))
-    st.stop()
+# Legacy saved-data Combined LLC Report removed. Use the unified chapter-based workflow above.
 selected=st.selectbox('Property',list(pmap),format_func=lambda k:f"{pmap[k].get('Property Name / LLC',k)} ({k})")
 p=pmap[selected]
 st.caption(f"{p.get('Property Address','')}  |  Report Language: {p.get('Report Language','English')}")
