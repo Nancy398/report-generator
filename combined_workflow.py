@@ -173,7 +173,7 @@ def show_combined_upload_workflow(google_load,records,store_google,save_reports)
             st.caption('Ending Cash = Beginning Cash + Property NOI − Tax − Insurance − Other Cash Expenses − Distribution + Adjustments')
             st.caption('Reserve = Beginning Reserve + Monthly Tax Reserve + Monthly Insurance Reserve − Tax Paid − Insurance Paid')
     st.caption('Beginning Cash / Reserve 优先使用 Reports → Monthly Statements 上个月的滚动计算结果；没有历史数据时才回退到 Properties Opening 值。')
-    st.subheader('4 · Executive Summary / 各物业独立说明')
+    st.subheader('5 · Executive Summary / 各物业独立说明')
     for item in edited:
         key=item['id']
         with st.expander(item['name']+' · Executive Summary',expanded=True):
@@ -189,7 +189,63 @@ def show_combined_upload_workflow(google_load,records,store_google,save_reports)
     cash_en='\n'.join(f'{e["name"]}: ending cash {_money(e["row"]["Ending Cash"])}; required reserve {_money(e["row"]["Required Reserve"])}; available {_money(e["row"]["Available to Distribute"])}.' for e in edited)
     notes_cn='\n'.join(f'{e["name"]}: {e["notes_cn"]}' for e in edited if e['notes_cn'])
     notes_en='\n'.join(f'{e["name"]}: {e["notes_en"]}' for e in edited if e['notes_en'])
-    st.subheader('5 · Investor Report 下载')
+    # Persist EACH property separately in the same Monthly Statements sheet used
+    # by Single Property Report. No LLC aggregate row is written.
+    st.subheader('4 · Save Monthly Data / 保存各物业月度数据')
+    st.caption('保存到 Google Sheets → Reports → Monthly Statements：每个 Property ID + Month 各一行。保存后下个月可以读取历史数据。')
+    valid_for_save=all(abs(e['row']['Income']-e['row']['Expenses']-e['row']['NOI'])<=.05 for e in edited)
+    if st.button('💾 Save Both Properties to Google Sheets',
+                 disabled=not valid_for_save,key='cu_save_monthly'):
+        saved_names=[];failures=[]
+        for e in edited:
+            r=e['row']
+            # These are inputs + independently computed results. Store_google
+            # protects rows already marked Confirmed against overwriting.
+            rec={
+                'Property ID':e['id'],'Month (YYYY-MM)':month,
+                'Rent Income':r['Rent Income'],'Utility Income':r['Utility Income'],
+                'Other Income':r['Other Income'],'Income':r['Income'],
+                'Expenses':r['Expenses'],'NOI':r['NOI'],
+                'Occupancy':r['Occupancy'],'Occupied Rooms':r['Occupied Rooms'],
+                'Total Rooms':r['Total Rooms'],
+                'Outstanding Rent Receivable':r['Outstanding Rent Receivable'],
+                'Property Tax Paid':r['Property Tax Paid'],
+                'Insurance Paid':r['Insurance Paid'],
+                'Other Cash Expense':r['Other Cash Expense'],
+                'Other Cash Adjustments':r['Other Cash Adjustments'],
+                'Distribution Paid':r['Distribution Paid'],
+                'Beginning Cash':r['Beginning Cash'],
+                'Ending Cash':r['Ending Cash'],
+                'Modeled Ending Cash':r['Ending Cash'],
+                'Required Reserve':r['Required Reserve'],
+                'Total Required Reserve':r['Required Reserve'],
+                'Reserve Shortfall':r['Reserve Shortfall'],
+                'Available to Distribute':r['Available to Distribute'],
+                'Monthly Reserve Addition':r['Monthly Reserve Addition'],
+                'Summary CN':e.get('notes_cn',''),
+                'Summary EN':e.get('notes_en',''),
+                'Notes':e.get('notes_en',''),
+                'Status':'Draft',
+                'Calculation Version':'combined-chapter-v7',
+                # Existing engine uses this switch to avoid double-counting
+                # tax/insurance cash outflows already included in NOI.
+                'Tax/Insurance Included in NOI?':'No',
+            }
+            try:
+                store_google(rec)
+                saved_names.append(e['name'])
+            except Exception as exc:
+                failures.append(f'{e["name"]}: {exc}')
+        if saved_names:
+            st.success('已保存：'+', '.join(saved_names))
+            try:
+                directory.clear()
+            except Exception:pass
+        for failure in failures:st.error('保存失败：'+failure)
+        if failures:
+            st.warning('部分物业未保存成功，请处理错误后重试。已保存的物业不会重复新增行。')
+    st.caption('注意：保存为 Draft；如果该物业该月已经 Confirmed，系统会阻止覆盖。Google Drive 的报告文件需要另外点击 Save Combined Reports to Google Drive。')
+    st.subheader('6 · Investor Report 下载')
     ready=all(abs(e['row']['Income']-e['row']['Expenses']-e['row']['NOI'])<=.05 for e in edited)
     if not ready:st.error('财务数据未配平，请先修正各物业 NOI。')
     clicked=st.button('Generate Combined Report',type='primary',disabled=not ready,key='cu_generate')
