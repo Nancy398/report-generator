@@ -26,8 +26,8 @@ def _chapter_index(elements):
 
 def _add_property_label(doc, name, index, chinese):
     p = doc.add_paragraph()
-    p.paragraph_format.space_before = Pt(6)
-    p.paragraph_format.space_after = Pt(3)
+    p.paragraph_format.space_before = Pt(12)
+    p.paragraph_format.space_after = Pt(6)
     p.paragraph_format.keep_with_next = True
     run = p.add_run(f'{index:02d}  {name}')
     run.bold = True
@@ -43,23 +43,6 @@ def _is_page_break_only(el):
     if el.tag != qn('w:p') or _text(el).strip():
         return False
     return bool(el.xpath('.//w:br[@w:type="page"]') or el.xpath('./w:pPr/w:pageBreakBefore'))
-
-
-def _compact(el):
-    """Reduce inherited oversized spacing, without altering fonts or tables."""
-    if el.tag != qn('w:p'):
-        return el
-    ppr = el.find(qn('w:pPr'))
-    if ppr is None:
-        from docx.oxml import OxmlElement
-        ppr=OxmlElement('w:pPr'); el.insert(0,ppr)
-    spacing=ppr.find(qn('w:spacing'))
-    if spacing is None:
-        from docx.oxml import OxmlElement
-        spacing=OxmlElement('w:spacing');ppr.append(spacing)
-    spacing.set(qn('w:before'),'0')
-    spacing.set(qn('w:after'),'45')
-    return el
 
 
 def make_chapter_combined_docx(llc, month, entries, chinese=False):
@@ -128,33 +111,11 @@ def make_chapter_combined_docx(llc, month, entries, chinese=False):
                 # Empty template spacer paragraphs take up substantial vertical space.
                 if el.tag == qn('w:p') and not _text(el).strip():
                     continue
-                body.insert(len(body)-1, _compact(deepcopy(el)))
-    # Combined chapters must fit both properties on a single page per section.
-    # The original single-property master uses large margins and large table spacing.
-    from docx.shared import Inches
-    for section in out.sections:
-        section.top_margin=Inches(.55)
-        section.bottom_margin=Inches(.5)
-        section.header_distance=Inches(.22)
-        section.footer_distance=Inches(.22)
-    for paragraph in out.paragraphs:
-        paragraph.paragraph_format.space_before=Pt(0)
-        paragraph.paragraph_format.space_after=Pt(2)
-        for run in paragraph.runs:
-            if run.font.size and run.font.size.pt > 11:
-                # Keep cover prominent; compact the rest.
-                if paragraph.style.name not in ('Title','Subtitle'):
-                    run.font.size=Pt(10)
-    for table in out.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                cell.vertical_alignment=1
-                for para in cell.paragraphs:
-                    para.paragraph_format.space_before=Pt(0)
-                    para.paragraph_format.space_after=Pt(0)
-                    para.paragraph_format.line_spacing=1.0
-                    for run in para.runs:
-                        run.font.size=Pt(8)
+                body.insert(len(body)-1, deepcopy(el))
+    # IMPORTANT: Keep the ORIGINAL 1438 template formatting intact.
+    # No changes to margins, font sizes, table rows, paragraph spacing or colors.
+    # Page breaks are removed only when they come from an individual
+    # single-property report; the one intentional chapter break remains.
     result = io.BytesIO()
     out.save(result)
     return result.getvalue()
