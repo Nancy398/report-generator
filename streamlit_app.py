@@ -97,19 +97,51 @@ if report_workflow == 'Upload & Generate Combined Report':
     from combined_llc import make_combined_docx, make_combined_pdf, build_uploaded_model
     st.subheader('Combined LLC Report · Upload PDFs')
     st.caption('上传每个物业的一份 Income Statement 和一份 Rent Roll；不需要 Google Sheets，也不需要先保存单物业报告。')
-    llc_name = st.text_input('LLC / Report Name', value='', placeholder='e.g. MW USC Development LLC')
-    report_month = st.text_input('Reporting Month (YYYY-MM)', value=datetime.now().strftime('%Y-%m'), key='upload_combined_month')
-    count = st.number_input('Number of Properties', min_value=2, max_value=12, value=2, step=1)
-    uploaded = []
-    for index in range(int(count)):
-        st.markdown(f'**Property {index + 1}**')
-        name = st.text_input('Property Address / Name', key=f'combined_name_{index}', placeholder='e.g. 1419 W 37th St')
-        col_income, col_roll = st.columns(2)
-        with col_income:
-            income_pdf = st.file_uploader('Income Statement PDF', type=['pdf'], key=f'combined_income_{index}')
-        with col_roll:
-            roll_pdf = st.file_uploader('Rent Roll PDF', type=['pdf'], key=f'combined_roll_{index}')
-        uploaded.append((name, income_pdf, roll_pdf))
+    # Read ONLY the property directory from Google Sheets; PDF financials are not read from Sheets.
+    @st.cache_data(ttl=300, show_spinner=False)
+    def combined_property_directory():
+        data=google_load()
+        rows=records(data.get('Properties'))
+        result=[]
+        for row in rows:
+            group=str(row.get('Property Name / LLC','') or '').strip()
+            address=str(row.get('Property Address','') or '').strip()
+            prop_id=str(row.get('Property ID','') or '').strip()
+            if group and address:
+                result.append({'group':group,'address':address,'id':prop_id})
+        return result
+
+    try:
+        directory=combined_property_directory()
+    except Exception as exc:
+        st.error(f'无法读取 Google Sheets 的 Properties 工作表：{exc}')
+        st.info('请检查 Reports 的 Google Sheets 授权；此功能只读取 LLC 和物业名称，不读取或修改财务数据。')
+        st.stop()
+    groups=sorted(set(x['group'] for x in directory),key=str.casefold)
+    if not groups:
+        st.warning('Properties 中没有可选择的 LLC。请检查 Property Name / LLC 和 Property Address 两列。')
+        st.stop()
+    llc_name=st.selectbox('Select LLC',groups,index=None,placeholder='Choose an LLC',key='upload_combined_llc')
+    report_month=st.text_input('Reporting Month (YYYY-MM)',value=datetime.now().strftime('%Y-%m'),key='upload_combined_month')
+    uploaded=[]
+    if llc_name:
+        members=[x for x in directory if x['group']==llc_name]
+        seen=set()
+        members=[x for x in members if not (x['id'] in seen or seen.add(x['id']))]  # unique Property ID
+        st.caption(f'{len(members)} properties found under {llc_name}. Upload each property’s Income Statement and Rent Roll.')
+        if len(members)<2:
+            st.warning('该 LLC 在 Properties 中少于两个物业；Combined Report 至少需要两个。')
+        for index,item in enumerate(members):
+            name=item['address']
+            st.markdown(f'**Property {index+1}: {name}**')
+            col_income,col_roll=st.columns(2)
+            with col_income:
+                income_pdf=st.file_uploader('Income Statement PDF',type=['pdf'],key=f'combined_income_{item["id"]}')
+            with col_roll:
+                roll_pdf=st.file_uploader('Rent Roll PDF',type=['pdf'],key=f'combined_roll_{item["id"]}')
+            uploaded.append((name,income_pdf,roll_pdf))
+    else:
+        st.info('先选择 LLC，系统将自动列出旗下物业及上传位置。')
     st.subheader('Optional · LLC-level Cash & Distribution')
     st.caption('若未提供 LLC 银行余额及 Reserve，报告只展示已验证的运营数据，不会把缺失金额写成 $0。')
     include_cash = st.checkbox('Include LLC Cash / Reserve / Distribution', value=False, key='combined_cash_enabled')
@@ -120,9 +152,10 @@ if report_workflow == 'Upload & Generate Combined Report':
         with b: required_reserve=st.number_input('LLC Required Reserve', min_value=0.0, format='%.2f', key='combined_required_reserve')
         with c: distribution=st.number_input('LLC Distribution Paid', min_value=0.0, format='%.2f', key='combined_distribution')
         cash_inputs={'cash':ending_cash,'reserve':required_reserve,'distribution':distribution}
-    if st.button('Generate Combined Report', type='primary', key='combined_generate'):
+    if st.button('Generate Combined Report', type='primary', key='combined_generate', disabled=not llc_name or len(uploaded)<2):
         try:
-            if not llc_name.strip(): raise ValueError('请填写 LLC / Report Name。')
+            if not llc_name: raise ValueError('请先选择 LLC。')
+            if len(uploaded)<2: raise ValueError('该 LLC 至少需要两个物业。')
             if not re.fullmatch(r'\\d{4}-(0[1-9]|1[0-2])',report_month):
                 raise ValueError('Reporting Month 必须是 YYYY-MM。')
             entries=[]
