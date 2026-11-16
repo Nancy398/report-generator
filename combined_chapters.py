@@ -91,11 +91,22 @@ def make_chapter_combined_docx(llc, month, entries, chinese=False):
                 nodes[0].text = value
                 for node in nodes[1:]: node.text = ''
     for c_index, chapter in enumerate(CHAPTERS):
-        if c_index:
-            out.add_page_break()  # exactly one page break between chapters
+        # The cover is its own page. Each chapter starts on a fresh page.
+        out.add_page_break()
         elements, idx = source_docs[0]
         # Single running banner and chapter title, exactly as in 1438.
-        body.insert(len(body) - 1, deepcopy(elements[idx[chapter] - 1]))
+        banner = deepcopy(elements[idx[chapter] - 1])
+        # A combined report's running header must identify the LLC, not Property 1.
+        if banner.tag == qn('w:p'):
+            banner_texts = list(banner.iter(qn('w:t')))
+            if banner_texts:
+                full_banner = ''.join(t.text or '' for t in banner_texts)
+                first_property = entries[0]['name']
+                if first_property in full_banner:
+                    new_banner = full_banner.replace(first_property, llc)
+                    banner_texts[0].text = new_banner
+                    for t in banner_texts[1:]: t.text = ''
+        body.insert(len(body) - 1, banner)
         body.insert(len(body) - 1, deepcopy(elements[idx[chapter]]))
         for i, item in enumerate(entries):
             elements, indices = source_docs[i]
