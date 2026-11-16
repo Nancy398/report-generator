@@ -7,7 +7,7 @@ from docx import Document
 from docx.shared import Pt
 from pdf_appfolio import parse_income_pdf, parse_rent_roll_pdf
 from reporting import make_docx, make_pdf, append_pdf_documents
-from engine import number, pid, period
+from engine import number, pid, period, calculate
 from investor_communication import show_communications
 from combined_chapters import make_chapter_combined_docx
 
@@ -69,6 +69,26 @@ def show_combined_upload_workflow(google_load,records,store_google,save_reports)
     if not re.fullmatch(r'\d{4}-(0[1-9]|1[0-2])',month):
         st.error('Reporting Month must be YYYY-MM');return
     members=[p for p in all_props if p['group']==llc]
+    # Read saved history from Reports → Monthly Statements. The previous month is
+    # calculated with the SAME roll-forward engine used by Single Property Report.
+    history_rows=[];history_calculated=[];history_issues=[]
+    try:
+        master=google_load()
+        history_rows=records(master.get('Monthly Statements'))
+        history_calculated,history_issues=calculate(records(master.get('Properties')),history_rows)
+    except Exception as exc:
+        st.warning(f'历史 Monthly Statements 暂时无法读取：{exc}')
+    year_num,month_num=map(int,month.split('-'))
+    previous_month=f'{year_num-1:04d}-12' if month_num==1 else f'{year_num:04d}-{month_num-1:02d}'
+    def history_for(prop_id):
+        matches=[r for r in history_calculated if pid(r.get('Property ID'))==prop_id and period(r.get('Month (YYYY-MM)'))==previous_month]
+        if not matches:return None
+        row=dict(matches[-1])
+        raw=next((r for r in history_rows if pid(r.get('Property ID'))==prop_id and period(r.get('Month (YYYY-MM)'))==previous_month),{})
+        for field in ('Rent Income','Outstanding Rent Receivable','Occupancy','Occupied Rooms','Total Rooms'):
+            if row.get(field) is None or str(row.get(field))=='':
+                row[field]=raw.get(field)
+        return row
     st.caption(f'{len(members)} properties found under {llc}.')
     if len(members)<2:
         st.warning('Combined Report requires at least two properties.');return
@@ -115,12 +135,18 @@ def show_combined_upload_workflow(google_load,records,store_google,save_reports)
     st.caption('每个 Property 使用自己的 Beginning Cash、Tax/Insurance Reserve 和 Distribution。与单物业计算公式一致，不混合两个物业。')
     for item in edited:
         key=item['id']; settings=next(m['settings'] for m in members if m['id']==key)
+        prior=history_for(key)
+        item['previous']=prior or {}
         with st.expander(f'{item["name"]} · Cash & Reserve',expanded=True):
             a,b,c=st.columns(3)
             with a:
-                beginning=st.number_input('Beginning Cash',value=float(number(settings.get('Opening Cash'))),format='%.2f',key=f'cu_begin_{key}')
-                reserve_open=st.number_input('Beginning Required Reserve',value=float(number(settings.get('Opening Required Reserve'))),format='%.2f',key=f'cu_reserve_open_{key}')
+                beginning=st.number_input('Beginning Cash',value=float(number(prior.get('Ending Cash') if prior else settings.get('Opening Cash'))),format='%.2f',key=f'cu_begin_{key}_{month}')
+                reserve_open=st.number_input('Beginning Required Reserve',value=float(number(prior.get('Required Reserve') if prior else settings.get('Opening Required Reserve'))),format='%.2f',key=f'cu_reserve_open_{key}_{month}')
                 ar=st.number_input('Outstanding Rent Receivable',min_value=0.,format='%.2f',key=f'cu_ar_{key}')
+                if prior:
+                    st.success(f'已读取 {previous_month} 历史数据：Ending Cash {_money(number(prior.get("Ending Cash")))} · Reserve {_money(number(prior.get("Required Reserve")))}')
+                else:
+                    st.warning(f'找不到 {previous_month} 的历史记录，暂以 Properties 的 Opening Cash / Reserve 作为默认值；请核对。')
             with b:
                 tax_month=st.number_input('Monthly Tax Reserve',value=float(number(settings.get('Monthly Tax Reserve'))),min_value=0.,format='%.2f',key=f'cu_tax_month_{key}')
                 ins_month=st.number_input('Monthly Insurance Reserve',value=float(number(settings.get('Monthly Insurance Reserve'))),min_value=0.,format='%.2f',key=f'cu_ins_month_{key}')
@@ -146,7 +172,7 @@ def show_combined_upload_workflow(google_load,records,store_google,save_reports)
             if reserve>ending:st.warning(f'{item["name"]}: Reserve Shortfall; review distributions.')
             st.caption('Ending Cash = Beginning Cash + Property NOI − Tax − Insurance − Other Cash Expenses − Distribution + Adjustments')
             st.caption('Reserve = Beginning Reserve + Monthly Tax Reserve + Monthly Insurance Reserve − Tax Paid − Insurance Paid')
-    st.warning('Beginning Cash / Reserve 请按每个物业实际情况核对；直接上传模式不会自动读取历史现金记录。')
+    st.caption('Beginning Cash / Reserve 优先使用 Reports → Monthly Statements 上个月的滚动计算结果；没有历史数据时才回退到 Properties Opening 值。')
     st.subheader('4 · Executive Summary / 各物业独立说明')
     for item in edited:
         key=item['id']
@@ -181,7 +207,7 @@ def show_combined_upload_workflow(google_load,records,store_google,save_reports)
                 for e in edited:
                     settings=next(m['settings'] for m in members if m['id']==e['id'])
                     report_entries.append({'name':e['name'],'row':e['row'],
-                        'property':settings})
+                        'property':settings,'previous':e.get('previous') or {}})
                 doc=make_chapter_combined_docx(llc,month,report_entries,cn)
                 stem=f'Moo_{re.sub(r"[^A-Za-z0-9]+","_",llc)}_{month}_{language}_Combined'
                 artifacts.append((stem+'.docx',doc,'application/vnd.openxmlformats-officedocument.wordprocessingml.document'))
