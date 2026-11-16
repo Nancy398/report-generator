@@ -5,6 +5,7 @@ from copy import deepcopy
 from docx import Document
 from docx.oxml.ns import qn
 from docx.shared import Pt, RGBColor
+from docx.enum.text import WD_BREAK
 from reporting import make_docx
 
 CHAPTERS = ('01', '02', '03', '04', '05')
@@ -25,14 +26,41 @@ def _chapter_index(elements):
 
 def _add_property_label(doc, name, index, chinese):
     p = doc.add_paragraph()
-    p.paragraph_format.space_before = Pt(15)
-    p.paragraph_format.space_after = Pt(7)
+    p.paragraph_format.space_before = Pt(6)
+    p.paragraph_format.space_after = Pt(3)
+    p.paragraph_format.keep_with_next = True
     run = p.add_run(f'{index:02d}  {name}')
     run.bold = True
-    run.font.size = Pt(12)
+    run.font.size = Pt(10)
     run.font.name = 'Arial'
     run.font.color.rgb = RGBColor(36, 77, 107)
     return p
+
+def _is_page_break_only(el):
+    """The single-property template has an explicit page break before every section.
+    Never copy those into a chapter-combined document.
+    """
+    if el.tag != qn('w:p') or _text(el).strip():
+        return False
+    return bool(el.xpath('.//w:br[@w:type="page"]') or el.xpath('./w:pPr/w:pageBreakBefore'))
+
+
+def _compact(el):
+    """Reduce inherited oversized spacing, without altering fonts or tables."""
+    if el.tag != qn('w:p'):
+        return el
+    ppr = el.find(qn('w:pPr'))
+    if ppr is None:
+        from docx.oxml import OxmlElement
+        ppr=OxmlElement('w:pPr'); el.insert(0,ppr)
+    spacing=ppr.find(qn('w:spacing'))
+    if spacing is None:
+        from docx.oxml import OxmlElement
+        spacing=OxmlElement('w:spacing');ppr.append(spacing)
+    spacing.set(qn('w:before'),'0')
+    spacing.set(qn('w:after'),'45')
+    return el
+
 
 def make_chapter_combined_docx(llc, month, entries, chinese=False):
     """One cover; each of 5 report chapters contains all properties in sequence.
@@ -69,7 +97,8 @@ def make_chapter_combined_docx(llc, month, entries, chinese=False):
             body.remove(el)
     # Cover stops just before the first running banner.
     for el in first_elements[:first_indices['01'] - 1]:
-        body.insert(len(body) - 1, deepcopy(el))
+        if not _is_page_break_only(el):
+            body.insert(len(body) - 1, deepcopy(el))
     # Replace first-report cover fields with LLC name; preserve cover typography.
     cover = [el for el in body if el.tag == qn('w:p')]
     for paragraph_index, value in ((4, llc.upper()), (5, f'{len(entries)} Properties  |  Combined LLC Report')):
@@ -80,7 +109,7 @@ def make_chapter_combined_docx(llc, month, entries, chinese=False):
                 for node in nodes[1:]: node.text = ''
     for c_index, chapter in enumerate(CHAPTERS):
         if c_index:
-            out.add_page_break()
+            out.add_page_break()  # exactly one page break between chapters
         elements, idx = source_docs[0]
         # Single running banner and chapter title, exactly as in 1438.
         body.insert(len(body) - 1, deepcopy(elements[idx[chapter] - 1]))
@@ -94,8 +123,38 @@ def make_chapter_combined_docx(llc, month, entries, chinese=False):
                 end = next((j for j in range(start, len(elements)) if elements[j].tag == qn('w:sectPr')),len(elements))
             _add_property_label(out, item['name'], i+1, chinese)
             for el in elements[start:end]:
-                if el.tag != qn('w:sectPr'):
-                    body.insert(len(body)-1, deepcopy(el))
+                if el.tag == qn('w:sectPr') or _is_page_break_only(el):
+                    continue
+                # Empty template spacer paragraphs take up substantial vertical space.
+                if el.tag == qn('w:p') and not _text(el).strip():
+                    continue
+                body.insert(len(body)-1, _compact(deepcopy(el)))
+    # Combined chapters must fit both properties on a single page per section.
+    # The original single-property master uses large margins and large table spacing.
+    from docx.shared import Inches
+    for section in out.sections:
+        section.top_margin=Inches(.55)
+        section.bottom_margin=Inches(.5)
+        section.header_distance=Inches(.22)
+        section.footer_distance=Inches(.22)
+    for paragraph in out.paragraphs:
+        paragraph.paragraph_format.space_before=Pt(0)
+        paragraph.paragraph_format.space_after=Pt(2)
+        for run in paragraph.runs:
+            if run.font.size and run.font.size.pt > 11:
+                # Keep cover prominent; compact the rest.
+                if paragraph.style.name not in ('Title','Subtitle'):
+                    run.font.size=Pt(10)
+    for table in out.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                cell.vertical_alignment=1
+                for para in cell.paragraphs:
+                    para.paragraph_format.space_before=Pt(0)
+                    para.paragraph_format.space_after=Pt(0)
+                    para.paragraph_format.line_spacing=1.0
+                    for run in para.runs:
+                        run.font.size=Pt(8)
     result = io.BytesIO()
     out.save(result)
     return result.getvalue()
