@@ -76,6 +76,27 @@ def build_model(group,month,properties,statements,summaries):
         'available':available,'distribution':dist,'frequency':freq,'summary_cn':str(summary.get('Summary CN','') or ''),
         'summary_en':str(summary.get('Summary EN','') or ''), 'total_noi':sum(x['noi'] for x in data)}
 
+
+def build_uploaded_model(group, month, entries, cash_inputs=None):
+    """Build combined LLC data from newly uploaded PDFs, without Google Sheets."""
+    if len(entries) < 2:
+        raise ValueError("At least two properties are required.")
+    rows = []
+    for entry in entries:
+        f, r = entry["financial"], entry["roll"]
+        rows.append(dict(id=entry["name"], name=entry["name"],
+            rent=f.get("rent_income"), utility=f.get("utility_income"),
+            other=f.get("other_income"), income=f["income"], expenses=f["expenses"],
+            noi=f["noi"], occupancy=r["occupancy"]*100, prior_occupancy=None,
+            rooms=r["rooms"], occupied=r["occupied"]))
+    c = cash_inputs or {}
+    cash, reserve, dist = c.get("cash"), c.get("reserve"), c.get("distribution")
+    return dict(group=group, month=month, properties=rows, cash=cash,
+        reserve=reserve, shortfall=max(0, reserve-cash) if cash is not None and reserve is not None else None,
+        available=max(0, cash-reserve) if cash is not None and reserve is not None else None,
+        distribution=dist, frequency="Monthly", summary_cn="", summary_en="",
+        total_noi=sum(r["noi"] for r in rows))
+
 def _font(run,cn=False,bold=False,size=10,color=None):
     run.font.name='Arial';run.font.size=Pt(size);run.bold=bold
     if color:run.font.color.rgb=color
@@ -123,7 +144,9 @@ def _occ_sentence(item,cn):
 def generated_summary(model,cn=False):
     """Same auto-generated narrative for preview and exported Word/PDF."""
     operating='\n'.join(_occ_sentence(p,cn) for p in model['properties'])
-    if model['frequency'].lower()=='quarterly':
+    if model['available'] is None:
+        cash=('LLC 现金及储备数据未提供；本报告仅包含运营数据。' if cn else 'LLC cash and reserves were not supplied; this report covers operating results only.')
+    elif model['frequency'].lower()=='quarterly':
         cash=(f'截至本月末，LLC 累计可分配现金为 {money(model["available"])}。' if cn else f'Cumulative LLC cash available for distribution at month-end was {money(model["available"])}.')
         cash+=('该余额将结转至下一次季度分红评估。' if cn else ' The balance will carry forward to the next quarterly distribution review.')
     else:
@@ -158,11 +181,18 @@ def make_combined_docx(model,cn=False):
               ('Total Income',money(p['income'])),('Operating Expenses',money(p['expenses'])),('NOI',money(p['noi']))]
         table(doc,['指标','金额'] if cn else ['METRIC','AMOUNT'],data,cn)
     heading(doc,f'{len(model["properties"])+2:02d}','LLC 统一现金及分红' if cn else 'LLC CASH & DISTRIBUTION',cn)
-    table(doc,['项目','金额'] if cn else ['ITEM','AMOUNT'],[
-        ('Combined NOI',money(model['total_noi'])),('LLC Ending Cash',money(model['cash'])),
-        ('LLC Required Reserve',money(model['reserve'])),('LLC Reserve Shortfall',money(model['shortfall'])),
-        ('LLC Available to Distribute',money(model['available'])),('LLC Distribution Paid',money(model['distribution']))],cn)
-    add_text(doc,'现金及 Reserve 按各物业独立记录汇总，分红按 LLC 合计；不得重复录入共用银行账户余额。' if cn else 'Cash and reserves are summed from distinct property records; LLC distributions are consolidated. Do not duplicate a shared bank balance.',cn,8,False,None,3)
+    cash_rows=[('Combined NOI',money(model['total_noi']))]
+    if model['cash'] is not None:
+        cash_rows += [('LLC Ending Cash',money(model['cash'])),
+                      ('LLC Required Reserve',money(model['reserve'])),
+                      ('LLC Reserve Shortfall',money(model['shortfall'])),
+                      ('LLC Available to Distribute',money(model['available'])),
+                      ('LLC Distribution Paid',money(model['distribution']))]
+    table(doc,['项目','金额'] if cn else ['ITEM','AMOUNT'],cash_rows,cn)
+    if model['cash'] is None:
+        add_text(doc,'LLC 现金、Reserve 和分红未提供；未将缺失数据视为零。' if cn else
+                 'LLC cash, reserves and distributions were not supplied; missing amounts are not treated as zero.',cn,8,False,None,3)
+
     out=io.BytesIO();doc.save(out);return out.getvalue()
 
 def make_combined_pdf(docx_bytes):
