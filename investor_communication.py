@@ -165,6 +165,41 @@ def _detailed_english_email(name, month, row, prior, notes):
                   'Please feel free to reach out with any questions.', 'Moo Housing'])
     return '\n\n'.join(parts)
 
+def detailed_combined_email(name, month, entries):
+    """One LLC email, with the established detailed sections per property."""
+    label = _english_month(month)
+    sections = ['Operations', 'Rental Income', 'Financial Performance', 'Cash Position & Distribution Update', 'Additional Operating Updates']
+    grouped = {section: [] for section in sections}
+    for entry in entries:
+        row = dict(entry['row'])
+        row['Vacant Rooms'] = entry.get('occ', {}).get('vacant')
+        body = _detailed_english_email(entry['name'], month, row, entry.get('previous'), entry.get('notes_en', ''))
+        active = None
+        for paragraph in body.split('\n\n'):
+            if paragraph in ['**'+section+'**' for section in sections]:
+                active = paragraph[2:-2]
+                grouped[active].append('**'+entry['name']+'**')
+            elif paragraph.startswith('We will continue to monitor'):
+                break
+            elif active:
+                grouped[active].append(paragraph)
+    parts = ['Dear Investors,', f'Please find below the key highlights for **{name} — {label}**:']
+    for section in sections:
+        if grouped[section]:
+            parts.extend(['**'+section+'**', *grouped[section]])
+        if section == 'Cash Position & Distribution Update':
+            available = [_num(e['row'], 'Available to Distribute') for e in entries]
+            paid = [_num(e['row'], 'Distribution Paid') for e in entries]
+            parts.append('**LLC Distribution Summary**')
+            if all(v is not None for v in available):
+                parts.append(f'- **Total Available Cash for Distribution Review:** {_usd(sum(available))}')
+            if all(v is not None for v in paid):
+                parts.append(f'- **Total Distribution Paid:** {_usd(sum(paid))}')
+            parts.append('Available cash is subject to management approval and is not an approved distribution.')
+    parts.extend(['We will continue to monitor rental income, operating expenses, and the properties’ cash positions.', 'Please refer to the attached monthly report for detailed financial statements, reserve information, and the updated rent rolls.', 'Please feel free to reach out with any questions.', 'Moo Housing'])
+    return '\n\n'.join(parts)
+
+
 def _email_html(body):
     """Convert the report's limited Markdown to safe, selectable HTML."""
     def inline(value):
