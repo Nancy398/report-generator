@@ -8,7 +8,7 @@ from docx.shared import Pt
 from pdf_appfolio import parse_income_pdf, parse_rent_roll_pdf
 from reporting import make_docx, make_pdf, append_pdf_documents
 from engine import number, pid, period, calculate
-from investor_communication import show_communications
+from investor_communication import show_communications, detailed_combined_email
 from combined_chapters import make_chapter_combined_docx
 
 
@@ -334,4 +334,5 @@ def show_combined_upload_workflow(google_load,records,store_google,save_reports)
             st.link_button('Open LLC Reports Folder',saved['folder_url'])
         except Exception as exc:st.error(f'Drive save failed: {exc}')
     show_communications(llc,month,op_cn,cash_cn,notes_cn,op_en,cash_en,notes_en,
-                        key='cu_'+re.sub(r'[^a-zA-Z0-9]','_',llc))
+                        key='cu_'+re.sub(r'[^a-zA-Z0-9]','_',llc),
+                        email_override_en=detailed_combined_email(llc,month,edited))
