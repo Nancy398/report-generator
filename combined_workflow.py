@@ -90,6 +90,10 @@ def show_combined_upload_workflow(google_load,records,store_google,save_reports)
                 row[field]=raw.get(field)
         return row
     st.caption(f'{len(members)} properties found under {llc}.')
+    save_slot=st.empty()  # Fixed location: visible before PDF uploads / report downloads.
+    with save_slot.container():
+        st.subheader('Save to Google Sheets · Reports → Monthly Statements')
+        st.info('请上传全部物业 PDF 并完成 Cash & Reserve 计算，随后这里会出现保存按钮。')
     if len(members)<2:
         st.warning('Combined Report requires at least two properties.');return
     for i,p in enumerate(members,1):
@@ -199,7 +203,11 @@ def show_combined_upload_workflow(google_load,records,store_google,save_reports)
             if current['Reserve Shortfall']>0:st.warning('Reserve Shortfall — review distribution.')
             st.caption('Calculated with the same engine.calculate() and monthly history as Single Property Report.')
     st.caption('Beginning Cash 和 Reserve 由 Single Property 的 engine.calculate() 从历史记录自动滚动；不在 Combined 中重复计算。')
-    if any(e.get('calculation_error') for e in edited):return
+    if any(e.get('calculation_error') for e in edited):
+        with save_slot.container():
+            st.subheader('Save to Google Sheets · 暂不可保存')
+            st.error('物业计算未完成；请先修正上方错误。')
+        return
     llc_available=sum(e['row']['Available to Distribute'] for e in edited)
     llc_paid=sum(e['row']['Distribution Paid'] for e in edited)
     st.subheader('4 · LLC Distribution Summary / LLC 分红汇总')
@@ -223,41 +231,41 @@ def show_combined_upload_workflow(google_load,records,store_google,save_reports)
     notes_en='\n'.join(f'{e["name"]}: {e["notes_en"]}' for e in edited if e['notes_en'])
     # Persist EACH property separately in the same Monthly Statements sheet used
     # by Single Property Report. No LLC aggregate row is written.
-    st.subheader('6 · Save to Google Sheets / 保存月度数据')
-    st.caption('保存到 Reports → Monthly Statements；使用与 Single Property 相同的输入字段及计算结果。')
-    valid_for_save=all(abs(e['row']['Income']-e['row']['Expenses']-e['row']['NOI'])<=.05 for e in edited)
-    if st.button('💾 Save Both Properties to Google Sheets',
-                 disabled=not valid_for_save,key='cu_save_monthly'):
-        saved_names=[];failures=[]
-        for e in edited:
-            r=e['row']
-            # These are inputs + independently computed results. Store_google
-            # protects rows already marked Confirmed against overwriting.
-            rec=dict(e['save_input'])
-            # Save EXACTLY the same calculated fields as Single Property Report.
-            for field in ('Beginning Cash','Modeled Ending Cash','Ending Cash',
-                          'Tax Reserve Required','Insurance Reserve Required',
-                          'Total Required Reserve','Required Reserve',
-                          'Reserve Shortfall','Available to Distribute',
-                          'Monthly Reserve Addition'):
-                rec[field]=r[field]
-            rec['Notes']=e.get('notes_en','')
-            rec['Summary CN']=e.get('notes_cn','')
-            rec['Summary EN']=e.get('notes_en','')
-            try:
-                store_google(rec)
-                saved_names.append(e['name'])
-            except Exception as exc:
-                failures.append(f'{e["name"]}: {exc}')
-        if saved_names:
-            st.success('已保存：'+', '.join(saved_names))
-            try:
+    with save_slot.container():
+        st.subheader('💾 Save to Google Sheets · Reports → Monthly Statements')
+        st.caption('保存当前月份的每个 Property（独立行），和 Single Property Report 使用相同的 Google Sheets 保存函数。')
+        valid_for_save=all(abs(e['row']['Income']-e['row']['Expenses']-e['row']['NOI'])<=.05 for e in edited)
+        if not valid_for_save:
+            st.error('Income − Expenses 与 NOI 不一致，请先核对，保存按钮暂不可用。')
+        if st.button('💾 Save Both Properties to Google Sheets',
+                     disabled=not valid_for_save,key='cu_save_monthly',type='primary'):
+            saved_names=[];failures=[]
+            for e in edited:
+                r=e['row']
+                rec=dict(e['save_input'])
+                for field in ('Beginning Cash','Modeled Ending Cash','Ending Cash',
+                              'Tax Reserve Required','Insurance Reserve Required',
+                              'Total Required Reserve','Required Reserve',
+                              'Reserve Shortfall','Available to Distribute',
+                              'Monthly Reserve Addition'):
+                    if field in r:
+                        rec[field]=r[field]
+                rec['Notes']=e.get('notes_en','')
+                rec['Summary CN']=e.get('notes_cn','')
+                rec['Summary EN']=e.get('notes_en','')
+                try:
+                    store_google(rec)
+                    saved_names.append(e['name'])
+                except Exception as exc:
+                    failures.append(f'{e["name"]}: {exc}')
+            if saved_names:
+                st.success('已写入 Reports → Monthly Statements：'+', '.join(saved_names))
                 directory.clear()
-            except Exception:pass
-        for failure in failures:st.error('保存失败：'+failure)
-        if failures:
-            st.warning('部分物业未保存成功，请处理错误后重试。已保存的物业不会重复新增行。')
-    st.caption('保存后 Google Sheets 每个 Property / Month 各一行；Confirmed 不可覆盖。Google Drive 文件另行保存。')
+            for failure in failures:
+                st.error('保存失败：'+failure)
+            if failures:
+                st.warning('仅部分物业保存成功；请处理错误后重试。')
+        st.caption('Google Drive 文件保存是另一个按钮，不会写入 Monthly Statements。')
     st.subheader('7 · Investor Report 下载')
     ready=all(abs(e['row']['Income']-e['row']['Expenses']-e['row']['NOI'])<=.05 for e in edited)
     if not ready:st.error('财务数据未配平，请先修正各物业 NOI。')
