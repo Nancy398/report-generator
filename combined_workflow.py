@@ -69,13 +69,13 @@ def show_combined_upload_workflow(google_load,records,store_google,save_reports)
     if not re.fullmatch(r'\d{4}-(0[1-9]|1[0-2])',month):
         st.error('Reporting Month must be YYYY-MM');return
     members=[p for p in all_props if p['group']==llc]
-    # Read saved history from Reports → Monthly Statements. The previous month is
-    # calculated with the SAME roll-forward engine used by Single Property Report.
-    history_rows=[];history_calculated=[];history_issues=[]
+    # Use the exact Single Property Report engine and monthly source records.
+    history_rows=[];history_calculated=[];history_issues=[];all_property_settings=[]
     try:
         master=google_load()
         history_rows=records(master.get('Monthly Statements'))
-        history_calculated,history_issues=calculate(records(master.get('Properties')),history_rows)
+        all_property_settings=records(master.get('Properties'))
+        history_calculated,history_issues=calculate(all_property_settings,history_rows)
     except Exception as exc:
         st.warning(f'历史 Monthly Statements 暂时无法读取：{exc}')
     year_num,month_num=map(int,month.split('-'))
@@ -140,39 +140,71 @@ def show_combined_upload_workflow(google_load,records,store_google,save_reports)
         with st.expander(f'{item["name"]} · Cash & Reserve',expanded=True):
             a,b,c=st.columns(3)
             with a:
-                beginning=st.number_input('Beginning Cash',value=float(number(prior.get('Ending Cash') if prior else settings.get('Opening Cash'))),format='%.2f',key=f'cu_begin_{key}_{month}')
-                reserve_open=st.number_input('Beginning Required Reserve',value=float(number(prior.get('Required Reserve') if prior else settings.get('Opening Required Reserve'))),format='%.2f',key=f'cu_reserve_open_{key}_{month}')
-                ar=st.number_input('Outstanding Rent Receivable',min_value=0.,format='%.2f',key=f'cu_ar_{key}')
+                ar=st.number_input('Outstanding Rent Receivable',min_value=0.,
+                    value=float(number(item['previous'].get('Outstanding Rent Receivable'))),
+                    format='%.2f',key=f'cu_ar_{key}_{month}')
                 if prior:
-                    st.success(f'已读取 {previous_month} 历史数据：Ending Cash {_money(number(prior.get("Ending Cash")))} · Reserve {_money(number(prior.get("Required Reserve")))}')
+                    st.info(f'{previous_month} previous month: Ending Cash {_money(number(prior.get("Ending Cash")))}; Required Reserve {_money(number(prior.get("Required Reserve")))}')
                 else:
-                    st.warning(f'找不到 {previous_month} 的历史记录，暂以 Properties 的 Opening Cash / Reserve 作为默认值；请核对。')
+                    st.warning(f'没有 {previous_month} 历史记录；计算将使用 Single Property 相同的 Opening Balance / 现有历史记录。')
             with b:
-                tax_month=st.number_input('Monthly Tax Reserve',value=float(number(settings.get('Monthly Tax Reserve'))),min_value=0.,format='%.2f',key=f'cu_tax_month_{key}')
-                ins_month=st.number_input('Monthly Insurance Reserve',value=float(number(settings.get('Monthly Insurance Reserve'))),min_value=0.,format='%.2f',key=f'cu_ins_month_{key}')
-                tax_paid=st.number_input('Property Tax Paid from Reserve',min_value=0.,format='%.2f',key=f'cu_tax_paid_{key}')
-                ins_paid=st.number_input('Insurance Paid from Reserve',min_value=0.,format='%.2f',key=f'cu_ins_paid_{key}')
+                tax_paid=st.number_input('Property Tax Paid from Reserve',min_value=0.,format='%.2f',key=f'cu_tax_paid_{key}_{month}')
+                ins_paid=st.number_input('Insurance Paid from Reserve',min_value=0.,format='%.2f',key=f'cu_ins_paid_{key}_{month}')
             with c:
-                other_cash=st.number_input('Other Cash Expenses NOT in NOI',min_value=0.,format='%.2f',key=f'cu_other_cash_{key}')
-                adjustment=st.number_input('Other Cash Adjustments (+/-)',format='%.2f',key=f'cu_adjust_{key}')
-                paid=st.number_input('Distribution Paid',min_value=0.,format='%.2f',key=f'cu_paid_{key}')
-            ending=beginning+item['row']['NOI']-tax_paid-ins_paid-other_cash-paid+adjustment
-            reserve=reserve_open+tax_month+ins_month-tax_paid-ins_paid
-            item['row'].update({'Beginning Cash':beginning,'Ending Cash':ending,'Required Reserve':reserve,
-                'Reserve Shortfall':max(0.,reserve-ending),'Available to Distribute':max(0.,ending-reserve),
-                'Distribution Paid':paid,'Monthly Reserve Addition':tax_month+ins_month,
-                'Property Tax Paid':tax_paid,'Insurance Paid':ins_paid,'Other Cash Expense':other_cash,
-                'Other Cash Adjustments':adjustment,'Outstanding Rent Receivable':ar,
-                'Occupancy':item['occ']['occupancy'],'Occupied Rooms':item['occ']['occupied'],
+                other_cash=st.number_input('Other Cash Expenses NOT in NOI',min_value=0.,format='%.2f',key=f'cu_other_cash_{key}_{month}')
+                adjustment=st.number_input('Other Cash Adjustments (+/-)',format='%.2f',key=f'cu_adjust_{key}_{month}')
+                paid=st.number_input('Distribution Paid (actual)',min_value=0.,format='%.2f',key=f'cu_paid_{key}_{month}')
+            # Match the Single Property form: submit only INPUT fields to engine.calculate().
+            # No manual beginning balance or duplicate combined-only cash formula.
+            input_row={
+                'Property ID':key,'Month (YYYY-MM)':month,
+                'Rent Income':item['row']['Rent Income'],
+                'Utility Income':item['row']['Utility Income'],
+                'Other Income':item['row']['Other Income'],
+                'Income':item['row']['Income'],'Expenses':item['row']['Expenses'],
+                'NOI':item['row']['NOI'],
+                'Property Tax Paid':tax_paid,'Insurance Paid':ins_paid,
+                'Other Cash Expense':other_cash,'Other Cash Adjustments':adjustment,
+                'Distribution Paid':paid,'Outstanding Rent Receivable':ar,
+                'Occupancy':item['occ']['occupancy'],
+                'Occupied Rooms':item['occ']['occupied'],
+                'Total Rooms':item['occ']['rooms'],
+                'Calculation Version':'modeled-v2','Status':'Draft',
+            }
+            # Replace an existing draft of this month (same behavior as Single Property).
+            current_history=[h for h in history_rows if not (
+                pid(h.get('Property ID'))==key and period(h.get('Month (YYYY-MM)'))==month)]
+            current_history.append(input_row)
+            calculated,calc_issues=calculate(all_property_settings or [m['settings'] for m in members],current_history)
+            current=next((r for r in calculated if pid(r.get('Property ID'))==key
+                and period(r.get('Month (YYYY-MM)'))==month),None)
+            if current is None:
+                st.error(f'{item["name"]}: Single Property calculation failed. Check Properties and Monthly Statements.')
+                item['calculation_error']=True
+                continue
+            for issue in calc_issues:
+                if key in issue: st.warning(issue)
+            item['save_input']=input_row
+            item['row'].update(current)
+            item['row'].update({'Outstanding Rent Receivable':ar,
+                'Occupancy':item['occ']['occupancy'],
+                'Occupied Rooms':item['occ']['occupied'],
                 'Total Rooms':item['occ']['rooms'],
                 'Distribution Frequency':str(settings.get('Distribution Frequency') or 'Monthly')})
             x,y,z=st.columns(3)
-            x.metric('Ending Cash',_money(ending));y.metric('Required Reserve',_money(reserve))
-            z.metric('Reserve Shortfall' if reserve>ending else 'Available Distribution',_money(abs(ending-reserve)))
-            if reserve>ending:st.warning(f'{item["name"]}: Reserve Shortfall; review distributions.')
-            st.caption('Ending Cash = Beginning Cash + Property NOI − Tax − Insurance − Other Cash Expenses − Distribution + Adjustments')
-            st.caption('Reserve = Beginning Reserve + Monthly Tax Reserve + Monthly Insurance Reserve − Tax Paid − Insurance Paid')
-    st.caption('Beginning Cash / Reserve 优先使用 Reports → Monthly Statements 上个月的滚动计算结果；没有历史数据时才回退到 Properties Opening 值。')
+            x.metric('Beginning Cash',_money(current['Beginning Cash']))
+            y.metric('Ending Cash',_money(current['Ending Cash']))
+            z.metric('Required Reserve',_money(current['Required Reserve']))
+            st.caption(f'Available to Distribute: {_money(current["Available to Distribute"])} · Reserve Shortfall: {_money(current["Reserve Shortfall"])}')
+            if current['Reserve Shortfall']>0:st.warning('Reserve Shortfall — review distribution.')
+            st.caption('Calculated with the same engine.calculate() and monthly history as Single Property Report.')
+    st.caption('Beginning Cash 和 Reserve 由 Single Property 的 engine.calculate() 从历史记录自动滚动；不在 Combined 中重复计算。')
+    if any(e.get('calculation_error') for e in edited):return
+    llc_available=sum(e['row']['Available to Distribute'] for e in edited)
+    llc_paid=sum(e['row']['Distribution Paid'] for e in edited)
+    st.subheader('4 · LLC Distribution Summary / LLC 分红汇总')
+    st.dataframe(pd.DataFrame([{'Property':e['name'],'Available to Distribute':e['row']['Available to Distribute'],'Distribution Paid':e['row']['Distribution Paid']} for e in edited] + [{'Property':'LLC TOTAL','Available to Distribute':llc_available,'Distribution Paid':llc_paid}]),hide_index=True,use_container_width=True)
+    st.caption('先分别计算各物业 Available to Distribute，再加总 LLC Total；实际已分红金额单独合计，不等同于 Available。')
     st.subheader('5 · Executive Summary / 各物业独立说明')
     for item in edited:
         key=item['id']
@@ -191,8 +223,8 @@ def show_combined_upload_workflow(google_load,records,store_google,save_reports)
     notes_en='\n'.join(f'{e["name"]}: {e["notes_en"]}' for e in edited if e['notes_en'])
     # Persist EACH property separately in the same Monthly Statements sheet used
     # by Single Property Report. No LLC aggregate row is written.
-    st.subheader('4 · Save Monthly Data / 保存各物业月度数据')
-    st.caption('保存到 Google Sheets → Reports → Monthly Statements：每个 Property ID + Month 各一行。保存后下个月可以读取历史数据。')
+    st.subheader('6 · Save to Google Sheets / 保存月度数据')
+    st.caption('保存到 Reports → Monthly Statements；使用与 Single Property 相同的输入字段及计算结果。')
     valid_for_save=all(abs(e['row']['Income']-e['row']['Expenses']-e['row']['NOI'])<=.05 for e in edited)
     if st.button('💾 Save Both Properties to Google Sheets',
                  disabled=not valid_for_save,key='cu_save_monthly'):
@@ -201,36 +233,17 @@ def show_combined_upload_workflow(google_load,records,store_google,save_reports)
             r=e['row']
             # These are inputs + independently computed results. Store_google
             # protects rows already marked Confirmed against overwriting.
-            rec={
-                'Property ID':e['id'],'Month (YYYY-MM)':month,
-                'Rent Income':r['Rent Income'],'Utility Income':r['Utility Income'],
-                'Other Income':r['Other Income'],'Income':r['Income'],
-                'Expenses':r['Expenses'],'NOI':r['NOI'],
-                'Occupancy':r['Occupancy'],'Occupied Rooms':r['Occupied Rooms'],
-                'Total Rooms':r['Total Rooms'],
-                'Outstanding Rent Receivable':r['Outstanding Rent Receivable'],
-                'Property Tax Paid':r['Property Tax Paid'],
-                'Insurance Paid':r['Insurance Paid'],
-                'Other Cash Expense':r['Other Cash Expense'],
-                'Other Cash Adjustments':r['Other Cash Adjustments'],
-                'Distribution Paid':r['Distribution Paid'],
-                'Beginning Cash':r['Beginning Cash'],
-                'Ending Cash':r['Ending Cash'],
-                'Modeled Ending Cash':r['Ending Cash'],
-                'Required Reserve':r['Required Reserve'],
-                'Total Required Reserve':r['Required Reserve'],
-                'Reserve Shortfall':r['Reserve Shortfall'],
-                'Available to Distribute':r['Available to Distribute'],
-                'Monthly Reserve Addition':r['Monthly Reserve Addition'],
-                'Summary CN':e.get('notes_cn',''),
-                'Summary EN':e.get('notes_en',''),
-                'Notes':e.get('notes_en',''),
-                'Status':'Draft',
-                'Calculation Version':'combined-chapter-v7',
-                # Existing engine uses this switch to avoid double-counting
-                # tax/insurance cash outflows already included in NOI.
-                'Tax/Insurance Included in NOI?':'No',
-            }
+            rec=dict(e['save_input'])
+            # Save EXACTLY the same calculated fields as Single Property Report.
+            for field in ('Beginning Cash','Modeled Ending Cash','Ending Cash',
+                          'Tax Reserve Required','Insurance Reserve Required',
+                          'Total Required Reserve','Required Reserve',
+                          'Reserve Shortfall','Available to Distribute',
+                          'Monthly Reserve Addition'):
+                rec[field]=r[field]
+            rec['Notes']=e.get('notes_en','')
+            rec['Summary CN']=e.get('notes_cn','')
+            rec['Summary EN']=e.get('notes_en','')
             try:
                 store_google(rec)
                 saved_names.append(e['name'])
@@ -244,8 +257,8 @@ def show_combined_upload_workflow(google_load,records,store_google,save_reports)
         for failure in failures:st.error('保存失败：'+failure)
         if failures:
             st.warning('部分物业未保存成功，请处理错误后重试。已保存的物业不会重复新增行。')
-    st.caption('注意：保存为 Draft；如果该物业该月已经 Confirmed，系统会阻止覆盖。Google Drive 的报告文件需要另外点击 Save Combined Reports to Google Drive。')
-    st.subheader('6 · Investor Report 下载')
+    st.caption('保存后 Google Sheets 每个 Property / Month 各一行；Confirmed 不可覆盖。Google Drive 文件另行保存。')
+    st.subheader('7 · Investor Report 下载')
     ready=all(abs(e['row']['Income']-e['row']['Expenses']-e['row']['NOI'])<=.05 for e in edited)
     if not ready:st.error('财务数据未配平，请先修正各物业 NOI。')
     clicked=st.button('Generate Combined Report',type='primary',disabled=not ready,key='cu_generate')
