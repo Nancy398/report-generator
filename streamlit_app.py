@@ -14,7 +14,7 @@ from investor_communication import show_communications
 
 st.set_page_config(page_title='Moo Housing | Investor Report Generator',layout='wide')
 st.title('MOO HOUSING · Investor Report Generator')
-st.caption('Version: Combined Save Fix V10')
+st.caption('Version: Combined Email Fix V11')
 st.caption('AppFolio PDF → NOI / Occupancy → Cash & Reserve → Word / PDF with original PDF appendices')
 HERE=Path(__file__).parent
 SHEETS=['Properties','Monthly Statements','Investors','Distribution History','Summaries','LLCs','LLC Monthly']
@@ -368,7 +368,8 @@ op_cn, cash_cn, note_cn = _single_summary_preview(r, prior_row, True)
 op_en, cash_en, note_en = _single_summary_preview(r, prior_row, False)
 show_communications(str(p.get('Property Name / LLC') or selected), month,
                     op_cn, cash_cn, note_cn, op_en, cash_en, note_en,
-                    key='single_'+re.sub(r'[^a-zA-Z0-9]', '_', selected))
+                    key='single_'+re.sub(r'[^a-zA-Z0-9]', '_', selected),
+                    report_row={**r, 'Vacant Rooms': occupancy.get('vacant') if occupancy else None}, previous_row=prior_row)
 
 st.subheader('5 · 历史月度记录')
 if rows:st.dataframe(pd.DataFrame([x for x in rows if x['Property ID']==selected]).sort_values('Month (YYYY-MM)'),hide_index=True,use_container_width=True)
