@@ -14,7 +14,7 @@ from investor_communication import show_communications
 
 st.set_page_config(page_title='Moo Housing | Investor Report Generator',layout='wide')
 st.title('MOO HOUSING · Investor Report Generator')
-st.caption('Version: Chapter-Based Combined Report V3')
+st.caption('Version: Combined Save Fix V10')
 st.caption('AppFolio PDF → NOI / Occupancy → Cash & Reserve → Word / PDF with original PDF appendices')
 HERE=Path(__file__).parent
 SHEETS=['Properties','Monthly Statements','Investors','Distribution History','Summaries','LLCs','LLC Monthly']
@@ -71,10 +71,14 @@ def store_google(rec):
     if missing:
         heads+=missing
         ws.update(range_name='A1',values=[heads])
-    key=pid(rec['Property ID']);month=rec['Month (YYYY-MM)']
+    key=pid(rec['Property ID']);month=period(rec['Month (YYYY-MM)'])
+    if 'Property ID' not in heads or 'Month (YYYY-MM)' not in heads:
+        raise ValueError('Monthly Statements 缺少 Property ID 或 Month (YYYY-MM) 列')
+    id_col=heads.index('Property ID');month_col=heads.index('Month (YYYY-MM)')
     vals=ws.get_all_values();existing=None
     for i,r in enumerate(vals[1:],start=2):
-        if len(r)>=2 and pid(r[0])==key and period(r[1])==month:existing=i;break
+        if len(r)>max(id_col,month_col) and pid(r[id_col])==key and period(r[month_col])==month:
+            existing=i;break
     new=[rec.get(h,'') for h in heads]
     if existing:
         old=vals[existing-1];oldstatus=old[heads.index('Status')] if 'Status' in heads and len(old)>heads.index('Status') else ''
